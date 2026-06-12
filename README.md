@@ -17,8 +17,10 @@ export, then copy or download clean figures for your master sheet.
   available in the Custom pivot to count/sum per brand. Brand list lives in
   `PRIVATE_BRANDS` in [`app.py`](app.py).
 - **Revenue basis:** net (`price_clean`) or gross (`price_vat`) × quantity.
-- **Currency:** sales are in EUR; revenue/AOV display in Kč using the live
-  **Czech National Bank** daily EUR→CZK rate (cached, with a manual-rate fallback).
+- **Currency:** sales are in EUR; revenue/AOV display in Kč via **Czech National
+  Bank** rates. Three modes: **Historical** (each order converted at the ČNB rate
+  on its own date — best for a test spanning a date range), **Live today**, or a
+  **Manual** fixed rate. Rates are cached, with a manual fallback if ČNB is unreachable.
 - **Three views:**
   - **Totals** — one summary row for the current filter.
   - **Per-variant** — one row per variant with absolute + % difference vs a chosen baseline.
