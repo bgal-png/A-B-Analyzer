@@ -142,12 +142,14 @@ def metrics_for(df: pd.DataFrame, use_gross: bool) -> dict[str, float]:
     revenue = float(df[rev_col].sum()) if rev_col in df.columns else 0.0
     orders = int(df[COL_ORDER].nunique()) if COL_ORDER in df.columns else 0
     qty = float(df[COL_AMOUNT].sum()) if COL_AMOUNT in df.columns else float(len(df))
+    # Column order: Orders, Revenue first (Conversion rate slots in here later),
+    # then the supporting metrics. AOV = Average Order Value = Revenue / Orders.
     return {
-        "Revenue": round(revenue, 2),
         "Orders": orders,
+        "Revenue": round(revenue, 2),
+        "AOV": round(revenue / orders, 2) if orders else 0.0,
         "Quantity": round(qty, 2),
         "Line items": len(df),
-        "AOV": round(revenue / orders, 2) if orders else 0.0,
         "Items / order": round(len(df) / orders, 2) if orders else 0.0,
     }
 
