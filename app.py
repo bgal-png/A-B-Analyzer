@@ -96,6 +96,10 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     df["_brand"] = [detect_brand(a, b) for a, b in zip(iname, cname)]
     df["_is_private"] = df["_brand"] != ""
 
+    # Normalized search blob over both name fields (German itemname + Czech
+    # commonName), accent-/case-/separator-insensitive, for the name search box.
+    df["_name_search"] = [normalize_text(f"{a} {b}") for a, b in zip(iname, cname)]
+
     df["_margin"] = pd.NA  # placeholder — wired in when a pricelist is added
     return df
 
@@ -239,9 +243,13 @@ def main() -> None:
                     sel = st.multiselect(label, opts)
                     if sel:
                         work = work[work[col].isin(sel)]
-        term = st.text_input("Item name contains")
-        if term and "itemname" in df.columns:
-            work = work[work["itemname"].str.contains(term, case=False, na=False)]
+        term = st.text_input("Item name contains",
+                             help="Searches both the German and Czech product names; "
+                                  "accent- and case-insensitive (e.g. 'coc' or 'čoč').")
+        if term:
+            term_norm = normalize_text(term)
+            if term_norm:
+                work = work[work["_name_search"].str.contains(re.escape(term_norm), na=False)]
 
     st.caption(f"**{len(work):,}** line items after filters"
                + (f" · test **{selected_test}**" if selected_test else ""))
