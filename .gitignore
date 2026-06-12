@@ -1,0 +1,16 @@
+# Never commit real sales exports — customer data
+*.csv
+*.xlsx
+*.xls
+!sample_data/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
