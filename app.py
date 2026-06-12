@@ -8,9 +8,32 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
+import urllib.request
 
 import pandas as pd
 import streamlit as st
+
+CNB_RATE_URL = (
+    "https://www.cnb.cz/en/financial-markets/foreign-exchange-market/"
+    "central-bank-exchange-rate-fixing/central-bank-exchange-rate-fixing/daily.txt"
+)
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def fetch_czk_rate() -> tuple[float, str] | None:
+    """Live EUR→CZK from the Czech National Bank daily fixing. Returns (rate, date) or None."""
+    try:
+        req = urllib.request.Request(CNB_RATE_URL, headers={"User-Agent": "Mozilla/5.0"})
+        txt = urllib.request.urlopen(req, timeout=10).read().decode("utf-8")
+        lines = txt.splitlines()
+        date = lines[0].split("#")[0].strip()
+        for ln in lines:
+            if "|EUR|" in ln:
+                parts = ln.split("|")  # Country|Currency|Amount|Code|Rate
+                return float(parts[4].replace(",", ".")) / float(parts[2]), date
+    except Exception:
+        return None
+    return None
 
 # Columns we rely on. Missing ones degrade gracefully.
 COL_ORDER = "orderId"
@@ -194,10 +217,19 @@ def main() -> None:
     sb.header("Filters")
 
     use_gross = sb.radio("Revenue basis", ["Net", "Gross"], horizontal=True) == "Gross"
-    czk_rate = sb.number_input("EUR → CZK rate", min_value=0.0, value=25.00, step=0.10,
-                               format="%.2f",
-                               help="Revenue (in EUR) is multiplied by this rate and shown in Kč. "
-                                    "Set to 1 to keep EUR values.")
+    live = sb.checkbox("Live ČNB EUR→CZK rate", value=True,
+                       help="Fetch the official Czech National Bank daily fixing.")
+    fetched = fetch_czk_rate() if live else None
+    if fetched:
+        czk_rate, rate_date = fetched
+        sb.caption(f"ČNB {rate_date}: 1 € = {czk_rate:.3f} Kč")
+    else:
+        if live:
+            sb.warning("Couldn't reach ČNB — enter the rate manually.")
+        czk_rate = sb.number_input("EUR → CZK rate", min_value=0.0, value=25.00, step=0.10,
+                                   format="%.2f",
+                                   help="Revenue (in EUR) is multiplied by this rate and shown in Kč. "
+                                        "Set to 1 to keep EUR values.")
 
     tests = test_options(df)
     test_choice = sb.selectbox("Test", [NO_TEST] + tests)
