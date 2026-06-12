@@ -136,10 +136,13 @@ def compute_margin(df: pd.DataFrame, pricelist: pd.DataFrame | None = None) -> p
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
-def metrics_for(df: pd.DataFrame, use_gross: bool) -> dict[str, float]:
-    """Aggregate metrics for a slice."""
+MONEY_COLS = ("Revenue", "AOV")
+
+
+def metrics_for(df: pd.DataFrame, use_gross: bool, rate: float = 1.0) -> dict[str, float]:
+    """Aggregate metrics for a slice. `rate` converts revenue from EUR to CZK."""
     rev_col = "_rev_gross" if use_gross else "_rev_net"
-    revenue = float(df[rev_col].sum()) if rev_col in df.columns else 0.0
+    revenue = float(df[rev_col].sum()) * rate if rev_col in df.columns else 0.0
     orders = int(df[COL_ORDER].nunique()) if COL_ORDER in df.columns else 0
     qty = float(df[COL_AMOUNT].sum()) if COL_AMOUNT in df.columns else float(len(df))
     # Column order: Orders, Revenue first (Conversion rate slots in here later),
@@ -152,6 +155,17 @@ def metrics_for(df: pd.DataFrame, use_gross: bool) -> dict[str, float]:
         "Line items": len(df),
         "Items / order": round(len(df) / orders, 2) if orders else 0.0,
     }
+
+
+def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    """Format money columns as '1,000.58 Kč' and Δ% columns as '+12.34%' for display."""
+    fmt: dict = {}
+    for c in df.columns:
+        if c in MONEY_COLS:
+            fmt[c] = lambda v: "" if pd.isna(v) else f"{v:,.2f} Kč"
+        elif isinstance(c, str) and c.endswith("Δ%"):
+            fmt[c] = lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+    return df.style.format(fmt)
 
 
 def download_button(df: pd.DataFrame, label: str, key: str) -> None:
@@ -180,6 +194,10 @@ def main() -> None:
     sb.header("Filters")
 
     use_gross = sb.radio("Revenue basis", ["Net", "Gross"], horizontal=True) == "Gross"
+    czk_rate = sb.number_input("EUR → CZK rate", min_value=0.0, value=25.00, step=0.10,
+                               format="%.2f",
+                               help="Revenue (in EUR) is multiplied by this rate and shown in Kč. "
+                                    "Set to 1 to keep EUR values.")
 
     tests = test_options(df)
     test_choice = sb.selectbox("Test", [NO_TEST] + tests)
@@ -258,18 +276,18 @@ def main() -> None:
     tab_totals, tab_variant, tab_pivot = st.tabs(["Totals", "Per-variant", "Custom pivot"])
 
     with tab_totals:
-        m = metrics_for(work, use_gross)
+        m = metrics_for(work, use_gross, czk_rate)
         cols = st.columns(len(m))
         for c, (k, v) in zip(cols, m.items()):
-            c.metric(k, f"{v:,}")
+            c.metric(k, f"{v:,.2f} Kč" if k in MONEY_COLS else f"{v:,}")
         totals_df = pd.DataFrame([m])
-        st.dataframe(totals_df, use_container_width=True, hide_index=True)
+        st.dataframe(style_money(totals_df), use_container_width=True, hide_index=True)
         download_button(totals_df, "Download totals", "totals")
 
     with tab_variant:
         rows = []
         for var, grp in work.groupby("_variant"):
-            m = metrics_for(grp, use_gross)
+            m = metrics_for(grp, use_gross, czk_rate)
             m = {"Variant": var, **m}
             rows.append(m)
         vdf = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
@@ -282,7 +300,7 @@ def main() -> None:
                 vdf[f"{metric} Δ%"] = vdf[metric].apply(
                     lambda x: round((x - b) / b * 100, 2) if b else None
                 )
-        st.dataframe(vdf, use_container_width=True, hide_index=True)
+        st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 
     with tab_pivot:
@@ -299,10 +317,10 @@ def main() -> None:
             for keys, grp in work.groupby(group_by):
                 keys = keys if isinstance(keys, tuple) else (keys,)
                 rec = {label_map.get(g, g): k for g, k in zip(group_by, keys)}
-                rec.update(metrics_for(grp, use_gross))
+                rec.update(metrics_for(grp, use_gross, czk_rate))
                 recs.append(rec)
             pdf = pd.DataFrame(recs)
-            st.dataframe(pdf, use_container_width=True, hide_index=True)
+            st.dataframe(style_money(pdf), use_container_width=True, hide_index=True)
             download_button(pdf, "Download pivot", "pivot")
         else:
             st.info("Pick one or more columns to group by.")
