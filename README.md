@@ -11,6 +11,11 @@ export, then copy or download clean figures for your master sheet.
   double-count. Rows outside the test are excluded.
 - **Filters:** test, variant, date window, exclude cancelled, final-only, item
   type, include/exclude delivery lines, payment, country, delivery type, item name.
+- **Private brands only.** A checkbox restricts results to our private brands,
+  matched against the item name with accent-/case-/separator-insensitive logic
+  (so `Laim Care`, `Laim-Care`, `laimcare` all match). A derived `brand` column is
+  available in the Custom pivot to count/sum per brand. Brand list lives in
+  `PRIVATE_BRANDS` in [`app.py`](app.py).
 - **Revenue basis:** net (`price_clean`) or gross (`price_vat`) × quantity.
 - **Three views:**
   - **Totals** — one summary row for the current filter.

@@ -6,6 +6,8 @@ test (handling pipe-delimited multi-test items), so figures never double-count.
 from __future__ import annotations
 
 import io
+import re
+import unicodedata
 
 import pandas as pd
 import streamlit as st
@@ -24,6 +26,32 @@ COL_ITEMTYPE = "orderItemType"
 COL_PROJITEM = "projectItemId"
 
 NO_TEST = "— None (all rows) —"
+
+# Private brands. Matching is accent-/case-/separator-insensitive, so
+# "Laim Care", "Laim-Care", "laimcare" all resolve to the same brand.
+PRIVATE_BRANDS = [
+    "Gelone", "TopVue", "AQ Pure", "Laim Care", "Crazy lens", "Laim premium",
+    "Private label", "Válle", "Marisio", "Kimikado", "Beron", "Crullé",
+]
+
+
+def normalize_text(s: str) -> str:
+    """Lowercase, strip accents, drop everything but a-z0-9 (collapses spaces/hyphens)."""
+    s = unicodedata.normalize("NFKD", str(s))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+_BRAND_KEYS = [(b, normalize_text(b)) for b in PRIVATE_BRANDS]
+
+
+def detect_brand(*names: str) -> str:
+    """Return the first private brand found in the given name fields, else ''."""
+    norm = normalize_text(" ".join(n for n in names if n))
+    for brand, key in _BRAND_KEYS:
+        if key and key in norm:
+            return brand
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -61,6 +89,12 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
         df["_is_delivery"] = df[COL_PROJITEM].str.contains("delivery", case=False, na=False)
     else:
         df["_is_delivery"] = False
+
+    # Private-brand detection from item name (+ commonName when present).
+    iname = df["itemname"] if "itemname" in df.columns else pd.Series("", index=df.index)
+    cname = df["commonName"] if "commonName" in df.columns else pd.Series("", index=df.index)
+    df["_brand"] = [detect_brand(a, b) for a, b in zip(iname, cname)]
+    df["_is_private"] = df["_brand"] != ""
 
     df["_margin"] = pd.NA  # placeholder — wired in when a pricelist is added
     return df
@@ -189,6 +223,11 @@ def main() -> None:
     if not sb.checkbox("Include delivery / shipping lines", value=False):
         work = work[~work["_is_delivery"]]
 
+    # Private brands
+    if sb.checkbox("Private brands only", value=False,
+                   help="Match item name against our private brands (accent/case/separator-insensitive)."):
+        work = work[work["_is_private"]]
+
     # Generic categorical filters
     with sb.expander("More filters"):
         for col, label in [("payment", "Payment"),
@@ -243,10 +282,10 @@ def main() -> None:
         download_button(vdf, "Download per-variant", "per_variant")
 
     with tab_pivot:
-        candidates = ["_variant", "orderDestinationCountryId", "payment", "delivery_type",
-                      "itemname", "commonName", "orderMonth", "orderDay"]
+        candidates = ["_variant", "_brand", "orderDestinationCountryId", "payment",
+                      "delivery_type", "itemname", "commonName", "orderMonth", "orderDay"]
         group_opts = [c for c in candidates if c in work.columns]
-        label_map = {"_variant": "variant"}
+        label_map = {"_variant": "variant", "_brand": "brand"}
         group_by = st.multiselect(
             "Group by", group_opts, default=["_variant"] if "_variant" in group_opts else [],
             format_func=lambda c: label_map.get(c, c),
