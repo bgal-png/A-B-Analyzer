@@ -88,10 +88,11 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     if COL_PRICE_GROSS in df.columns:
         df["_rev_gross"] = df[COL_PRICE_GROSS].fillna(0) * amt
 
-    # Line profit = per-item profit * quantity (CZK), for each available basis.
+    # Profit columns are already line totals (quantity baked in) — use as-is, no * amt.
+    # (Verified: for amount=2, item_profit == (price_clean - purchase_price_perItem) * 2.)
     for label, col in PROFIT_COLS.items():
         if col in df.columns:
-            df[f"_profit_{label.lower()}"] = df[col].fillna(0) * amt
+            df[f"_profit_{label.lower()}"] = df[col].fillna(0)
 
     # Delivery / shipping lines: projectItemId contains "delivery".
     if COL_PROJITEM in df.columns:
@@ -202,9 +203,11 @@ def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True,
     has_profit = bool(profit_col) and profit_col in g.columns
     live = g[g[COL_CANCEL] != "1"] if COL_CANCEL in g.columns else g
     canc = g[g[COL_CANCEL] == "1"] if COL_CANCEL in g.columns else g.iloc[0:0]
-    orders = int(live[COL_ORDER].nunique()) if COL_ORDER in live.columns else 0
+    # Revenue/orders/AOV from product lines; margin from ALL lines incl. shipping.
+    prod = live[~live["_is_delivery"]] if "_is_delivery" in live.columns else live
+    orders = int(prod[COL_ORDER].nunique()) if COL_ORDER in prod.columns else 0
     storno = int(canc[COL_ORDER].nunique()) if COL_ORDER in canc.columns else 0
-    revenue = float(live[rev_col].sum()) if rev_col in live.columns else 0.0
+    revenue = float(prod[rev_col].sum()) if rev_col in prod.columns else 0.0
     margin = float(live[profit_col].sum()) if has_profit else 0.0
 
     row = {
@@ -218,9 +221,9 @@ def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True,
         row["Margin/obj"] = round(margin / orders, 2) if orders else 0.0
         row["Margin %"] = round(margin / revenue * 100, 2) if revenue else 0.0
     if include_private:
-        orev = live.groupby(COL_ORDER)[rev_col].sum() if orders else pd.Series(dtype=float)
+        orev = prod.groupby(COL_ORDER)[rev_col].sum() if orders else pd.Series(dtype=float)
         oprof = live.groupby(COL_ORDER)[profit_col].sum() if (orders and has_profit) else pd.Series(dtype=float)
-        priv_ids = set(live.loc[live["_is_private_lens"], COL_ORDER]) if "_is_private_lens" in live.columns else set()
+        priv_ids = set(prod.loc[prod["_is_private_lens"], COL_ORDER]) if "_is_private_lens" in prod.columns else set()
         all_ids = set(orev.index)
         with_ids, wo_ids = all_ids & priv_ids, all_ids - priv_ids
         mean_of = lambda s, ids: round(float(s.reindex(list(ids)).sum()) / len(ids), 2) if ids else 0.0
@@ -262,7 +265,7 @@ def main() -> None:
     sb = st.sidebar
     sb.header("Filters")
 
-    use_gross = sb.radio("Revenue basis", ["Net", "Gross"], horizontal=True) == "Gross"
+    use_gross = sb.radio("Revenue basis", ["Gross", "Net"], horizontal=True) == "Gross"
 
     # Margin basis (only the bases whose source column exists in the file).
     available = {lbl: f"_profit_{lbl.lower()}" for lbl in PROFIT_COLS
@@ -315,9 +318,9 @@ def main() -> None:
             keep = sb.multiselect("Item type", types, default=types)
             work = work[work[COL_ITEMTYPE].isin(keep)]
 
-    # Delivery lines
-    if not sb.checkbox("Include delivery / shipping lines", value=False):
-        work = work[~work["_is_delivery"]]
+    # Delivery lines. Applied to work (Totals/Pivot) below; work_all keeps them so the
+    # Per-variant margin can include shipping (which carries a negative margin).
+    include_delivery = sb.checkbox("Include delivery / shipping lines", value=False)
 
     # Private brands. Gates the private split columns in Per-variant, and filters
     # the Totals/Pivot views to private-brand rows. The filter is applied below
@@ -343,9 +346,12 @@ def main() -> None:
     if term and "commonName" in df.columns:
         work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
 
-    # work_all keeps cancelled rows AND both private/non-private (for Storno and the
-    # per-variant private split); work applies the private-only and cancel rules.
+    # work_all keeps delivery + cancelled + both private/non-private rows, so Per-variant
+    # can compute Storno, the private split, and a shipping-inclusive margin. work applies
+    # the delivery / private-only / cancel rules for the Totals and Pivot views.
     work_all = work.copy()
+    if not include_delivery:
+        work = work[~work["_is_delivery"]]
     if show_private:
         work = work[work["_is_private"]]
     if exclude_cancelled:
@@ -390,7 +396,8 @@ def main() -> None:
         total = {"Variant": "TOTAL", **eval_row(work_all, use_gross, show_private, profit_col)}
         vdf = pd.concat([vdf, pd.DataFrame([total])], ignore_index=True)
 
-        caption = "Storno is excluded from Revenue/Orders/AOV."
+        caption = ("Storno is excluded. Revenue/AOV use product lines only; "
+                   "Margin includes shipping lines (matching the manual sheet).")
         if show_private:
             caption += " Private columns use the *Pouze čočky* rule (private-brand contact lenses)."
         st.caption(caption)
