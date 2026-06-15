@@ -223,6 +223,7 @@ def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True,
         "AOV": round(revenue / orders, 2) if orders else 0.0,
     }
     if has_profit:
+        row["Margin"] = round(margin, 2)
         row["Margin/obj"] = round(margin / orders, 2) if orders else 0.0
         row["Margin %"] = round(margin / revenue * 100, 2) if revenue else 0.0
     if include_private:
