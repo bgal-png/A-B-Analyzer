@@ -8,75 +8,9 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
-import urllib.request
 
 import pandas as pd
 import streamlit as st
-
-CNB_RATE_URL = (
-    "https://www.cnb.cz/en/financial-markets/foreign-exchange-market/"
-    "central-bank-exchange-rate-fixing/central-bank-exchange-rate-fixing/daily.txt"
-)
-
-
-CNB_YEAR_URL = (
-    "https://www.cnb.cz/en/financial-markets/foreign-exchange-market/"
-    "central-bank-exchange-rate-fixing/central-bank-exchange-rate-fixing/year.txt?year={year}"
-)
-
-
-@st.cache_data(ttl=21600, show_spinner=False)
-def fetch_czk_rate() -> tuple[float, str] | None:
-    """Live EUR→CZK from the Czech National Bank daily fixing. Returns (rate, date) or None."""
-    try:
-        req = urllib.request.Request(CNB_RATE_URL, headers={"User-Agent": "Mozilla/5.0"})
-        txt = urllib.request.urlopen(req, timeout=10).read().decode("utf-8")
-        lines = txt.splitlines()
-        date = lines[0].split("#")[0].strip()
-        for ln in lines:
-            if "|EUR|" in ln:
-                parts = ln.split("|")  # Country|Currency|Amount|Code|Rate
-                return float(parts[4].replace(",", ".")) / float(parts[2]), date
-    except Exception:
-        return None
-    return None
-
-
-@st.cache_data(ttl=21600, show_spinner=False)
-def fetch_czk_history(year: int) -> dict[str, float]:
-    """All EUR→CZK daily fixings for a year from ČNB. Returns {YYYY-MM-DD: rate}, {} on failure."""
-    try:
-        req = urllib.request.Request(CNB_YEAR_URL.format(year=year), headers={"User-Agent": "Mozilla/5.0"})
-        txt = urllib.request.urlopen(req, timeout=20).read().decode("utf-8")
-        lines = txt.splitlines()
-        header = lines[0].split("|")
-        # Find the EUR column, e.g. header token "1 EUR" -> amount 1.
-        idx = next(i for i, h in enumerate(header) if h.strip().endswith("EUR"))
-        amount = float(header[idx].split()[0])
-        out: dict[str, float] = {}
-        for ln in lines[1:]:
-            cells = ln.split("|")
-            if len(cells) <= idx or not cells[0].strip():
-                continue
-            d, m, y = cells[0].split(".")
-            out[f"{y}-{m}-{d}"] = float(cells[idx].replace(",", ".")) / amount
-        return out
-    except Exception:
-        return {}
-
-
-def build_rate_series(order_dt: pd.Series, rate_map: dict[str, float]) -> pd.Series:
-    """Map each order datetime to the ČNB rate on its date, forward-filling weekends/holidays."""
-    s = pd.Series(rate_map)
-    s.index = pd.to_datetime(s.index)
-    s = s.sort_index()
-    days = order_dt.dt.normalize()
-    valid = days.dropna()
-    if not valid.empty:
-        full = pd.date_range(valid.min(), valid.max(), freq="D")
-        s = s.reindex(s.index.union(full)).sort_index().ffill().bfill()
-    mapped = days.map(s)
-    return mapped.fillna(s.mean())
 
 # Columns we rely on. Missing ones degrade gracefully.
 COL_ORDER = "orderId"
@@ -213,9 +147,8 @@ MONEY_COLS = ("Revenue", "AOV", "AOV private", "AOV non-private")
 
 
 def metrics_for(df: pd.DataFrame, use_gross: bool) -> dict[str, float]:
-    """Aggregate metrics for a slice. Uses the CZK-converted revenue columns when present."""
-    base = "_rev_gross" if use_gross else "_rev_net"
-    rev_col = f"{base}_czk" if f"{base}_czk" in df.columns else base
+    """Aggregate metrics for a slice. Prices in the file are CZK and used as-is."""
+    rev_col = "_rev_gross" if use_gross else "_rev_net"
     revenue = float(df[rev_col].sum()) if rev_col in df.columns else 0.0
     orders = int(df[COL_ORDER].nunique()) if COL_ORDER in df.columns else 0
     qty = float(df[COL_AMOUNT].sum()) if COL_AMOUNT in df.columns else float(len(df))
@@ -246,8 +179,7 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
 
 def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True) -> dict:
     """Master-sheet-style metrics for a variant slice that still includes cancelled rows."""
-    base = "_rev_gross" if use_gross else "_rev_net"
-    rev_col = f"{base}_czk" if f"{base}_czk" in g.columns else base
+    rev_col = "_rev_gross" if use_gross else "_rev_net"
     live = g[g[COL_CANCEL] != "1"] if COL_CANCEL in g.columns else g
     canc = g[g[COL_CANCEL] == "1"] if COL_CANCEL in g.columns else g.iloc[0:0]
     orders = int(live[COL_ORDER].nunique()) if COL_ORDER in live.columns else 0
@@ -303,46 +235,6 @@ def main() -> None:
     sb.header("Filters")
 
     use_gross = sb.radio("Revenue basis", ["Net", "Gross"], horizontal=True) == "Gross"
-    mode = sb.selectbox(
-        "EUR → CZK conversion",
-        ["Historical — ČNB (per order date)", "Live today — ČNB", "Manual fixed rate"],
-        help="Historical converts each order at the ČNB rate on its own date — best for a test "
-             "spanning a date range. Live uses today's rate; Manual lets you set one.",
-    )
-
-    def manual_rate() -> pd.Series:
-        r = sb.number_input("EUR → CZK rate", min_value=0.0, value=25.00, step=0.10,
-                            format="%.2f", help="Set to 1 to keep EUR values.")
-        return pd.Series(r, index=df.index)
-
-    if mode.startswith("Historical"):
-        rate_map: dict[str, float] = {}
-        if "_order_dt" in df.columns:
-            for yr in sorted(df["_order_dt"].dt.year.dropna().unique()):
-                rate_map.update(fetch_czk_history(int(yr)))
-        if rate_map:
-            rate_ser = build_rate_series(df["_order_dt"], rate_map)
-            sb.caption(f"ČNB historical · {df['_order_dt'].min():%d %b}–{df['_order_dt'].max():%d %b} · "
-                       f"avg {rate_ser.mean():.3f} Kč/€")
-        else:
-            sb.warning("Couldn't fetch ČNB history — enter the rate manually.")
-            rate_ser = manual_rate()
-    elif mode.startswith("Live"):
-        fetched = fetch_czk_rate()
-        if fetched:
-            r, rate_date = fetched
-            sb.caption(f"ČNB {rate_date}: 1 € = {r:.3f} Kč")
-            rate_ser = pd.Series(r, index=df.index)
-        else:
-            sb.warning("Couldn't reach ČNB — enter the rate manually.")
-            rate_ser = manual_rate()
-    else:
-        rate_ser = manual_rate()
-
-    # Apply the (possibly per-row) rate to produce CZK revenue columns.
-    for base in ("_rev_net", "_rev_gross"):
-        if base in df.columns:
-            df[f"{base}_czk"] = df[base] * rate_ser
 
     tests = test_options(df)
     test_choice = sb.selectbox("Test", [NO_TEST] + tests)
