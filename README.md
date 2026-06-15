@@ -23,7 +23,11 @@ export, then copy or download clean figures for your master sheet.
   **Manual** fixed rate. Rates are cached, with a manual fallback if ČNB is unreachable.
 - **Three views:**
   - **Totals** — one summary row for the current filter.
-  - **Per-variant** — one row per variant with absolute + % difference vs a chosen baseline.
+  - **Per-variant** — one row per variant plus a **TOTAL** row, mirroring the manual
+    evaluation sheet: Orders, **Storno** (cancelled) + % storno, Revenue, AOV, and a
+    private-brand split (orders with/without a private-brand contact lens, % and AOV
+    each). % difference vs a chosen baseline. *Private split uses the "Pouze čočky"
+    rule and is pending calibration against the exact privátka definition.*
   - **Custom pivot** — group by any columns × metrics.
 - **Export:** every view has a Download CSV button (semicolon, UTF-8 BOM — Excel-friendly).
 

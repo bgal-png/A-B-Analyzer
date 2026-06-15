@@ -162,6 +162,13 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     df["_brand"] = [detect_brand(a, b) for a, b in zip(iname, cname)]
     df["_is_private"] = df["_brand"] != ""
 
+    # Contact-lens flag (Czech commonName contains "čoč"). The private split in the
+    # per-variant report counts orders with a private-brand *contact lens* only
+    # ("Pouze čočky"). NOTE: this name-based rule currently over-counts vs the manual
+    # sheet (≈25 vs 21 on test 280) — calibrate once the exact privátka rule is known.
+    df["_is_lens"] = cname.str.contains("čoč", case=False, na=False)
+    df["_is_private_lens"] = df["_is_private"] & df["_is_lens"]
+
     df["_margin"] = pd.NA  # placeholder — wired in when a pricelist is added
     return df
 
@@ -202,7 +209,7 @@ def compute_margin(df: pd.DataFrame, pricelist: pd.DataFrame | None = None) -> p
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
-MONEY_COLS = ("Revenue", "AOV")
+MONEY_COLS = ("Revenue", "AOV", "AOV private", "AOV non-private")
 
 
 def metrics_for(df: pd.DataFrame, use_gross: bool) -> dict[str, float]:
@@ -232,7 +239,39 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:,.2f} Kč"
         elif isinstance(c, str) and c.endswith("Δ%"):
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+        elif isinstance(c, str) and c.startswith("%"):
+            fmt[c] = lambda v: "" if pd.isna(v) else f"{v:.2f}%"
     return df.style.format(fmt)
+
+
+def eval_row(g: pd.DataFrame, use_gross: bool) -> dict:
+    """Master-sheet-style metrics for a variant slice that still includes cancelled rows."""
+    base = "_rev_gross" if use_gross else "_rev_net"
+    rev_col = f"{base}_czk" if f"{base}_czk" in g.columns else base
+    live = g[g[COL_CANCEL] != "1"] if COL_CANCEL in g.columns else g
+    canc = g[g[COL_CANCEL] == "1"] if COL_CANCEL in g.columns else g.iloc[0:0]
+    orders = int(live[COL_ORDER].nunique()) if COL_ORDER in live.columns else 0
+    storno = int(canc[COL_ORDER].nunique()) if COL_ORDER in canc.columns else 0
+    revenue = float(live[rev_col].sum()) if rev_col in live.columns else 0.0
+
+    orev = live.groupby(COL_ORDER)[rev_col].sum() if orders else pd.Series(dtype=float)
+    priv_ids = set(live.loc[live["_is_private_lens"], COL_ORDER]) if "_is_private_lens" in live.columns else set()
+    all_ids = set(orev.index)
+    with_ids, wo_ids = all_ids & priv_ids, all_ids - priv_ids
+    mean_of = lambda ids: round(float(orev.reindex(list(ids)).sum()) / len(ids), 2) if ids else 0.0
+
+    return {
+        "Orders": orders,
+        "Storno": storno,
+        "% storno": round(storno / orders * 100, 2) if orders else 0.0,
+        "Revenue": round(revenue, 2),
+        "AOV": round(revenue / orders, 2) if orders else 0.0,
+        "Obj. non-private": len(wo_ids),
+        "Obj. private": len(with_ids),
+        "% private": round(len(with_ids) / orders * 100, 2) if orders else 0.0,
+        "AOV non-private": mean_of(wo_ids),
+        "AOV private": mean_of(with_ids),
+    }
 
 
 def download_button(df: pd.DataFrame, label: str, key: str) -> None:
@@ -329,9 +368,10 @@ def main() -> None:
         mask = (work["_order_dt"].dt.date >= start) & (work["_order_dt"].dt.date <= end)
         work = work[mask]
 
-    # Order state
-    if COL_CANCEL in df.columns and sb.checkbox("Exclude cancelled", value=True):
-        work = work[work[COL_CANCEL] != "1"]
+    # Order state. Cancelled exclusion is applied last so the Per-variant tab can
+    # still see cancelled rows to compute the Storno count.
+    exclude_cancelled = (sb.checkbox("Exclude cancelled", value=True)
+                         if COL_CANCEL in df.columns else False)
     if COL_FINAL in df.columns and sb.checkbox("Final orders only", value=False):
         work = work[work[COL_FINAL] == "1"]
 
@@ -368,6 +408,11 @@ def main() -> None:
         if term and "commonName" in df.columns:
             work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
 
+    # work_all keeps cancelled rows (for Storno); work applies the cancel rule.
+    work_all = work.copy()
+    if exclude_cancelled:
+        work = work[work[COL_CANCEL] != "1"]
+
     st.caption(f"**{len(work):,}** line items after filters"
                + (f" · test **{selected_test}**" if selected_test else ""))
 
@@ -388,11 +433,9 @@ def main() -> None:
         download_button(totals_df, "Download totals", "totals")
 
     with tab_variant:
-        rows = []
-        for var, grp in work.groupby("_variant"):
-            m = metrics_for(grp, use_gross)
-            m = {"Variant": var, **m}
-            rows.append(m)
+        # Computed from work_all so Storno (cancelled) is available per variant.
+        rows = [{"Variant": var, **eval_row(grp, use_gross)}
+                for var, grp in work_all.groupby("_variant")]
         vdf = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
 
         if len(vdf) > 1:
@@ -403,6 +446,13 @@ def main() -> None:
                 vdf[f"{metric} Δ%"] = vdf[metric].apply(
                     lambda x: round((x - b) / b * 100, 2) if b else None
                 )
+
+        # Total row = the same metrics over all selected variants combined.
+        total = {"Variant": "TOTAL", **eval_row(work_all, use_gross)}
+        vdf = pd.concat([vdf, pd.DataFrame([total])], ignore_index=True)
+
+        st.caption("Private columns use the *Pouze čočky* rule (private-brand contact lenses). "
+                   "Storno is excluded from Revenue/Orders/AOV.")
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 
