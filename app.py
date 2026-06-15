@@ -244,7 +244,7 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     return df.style.format(fmt)
 
 
-def eval_row(g: pd.DataFrame, use_gross: bool) -> dict:
+def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True) -> dict:
     """Master-sheet-style metrics for a variant slice that still includes cancelled rows."""
     base = "_rev_gross" if use_gross else "_rev_net"
     rev_col = f"{base}_czk" if f"{base}_czk" in g.columns else base
@@ -254,24 +254,27 @@ def eval_row(g: pd.DataFrame, use_gross: bool) -> dict:
     storno = int(canc[COL_ORDER].nunique()) if COL_ORDER in canc.columns else 0
     revenue = float(live[rev_col].sum()) if rev_col in live.columns else 0.0
 
-    orev = live.groupby(COL_ORDER)[rev_col].sum() if orders else pd.Series(dtype=float)
-    priv_ids = set(live.loc[live["_is_private_lens"], COL_ORDER]) if "_is_private_lens" in live.columns else set()
-    all_ids = set(orev.index)
-    with_ids, wo_ids = all_ids & priv_ids, all_ids - priv_ids
-    mean_of = lambda ids: round(float(orev.reindex(list(ids)).sum()) / len(ids), 2) if ids else 0.0
-
-    return {
+    row = {
         "Orders": orders,
         "Storno": storno,
         "% storno": round(storno / orders * 100, 2) if orders else 0.0,
         "Revenue": round(revenue, 2),
         "AOV": round(revenue / orders, 2) if orders else 0.0,
-        "Obj. non-private": len(wo_ids),
-        "Obj. private": len(with_ids),
-        "% private": round(len(with_ids) / orders * 100, 2) if orders else 0.0,
-        "AOV non-private": mean_of(wo_ids),
-        "AOV private": mean_of(with_ids),
     }
+    if include_private:
+        orev = live.groupby(COL_ORDER)[rev_col].sum() if orders else pd.Series(dtype=float)
+        priv_ids = set(live.loc[live["_is_private_lens"], COL_ORDER]) if "_is_private_lens" in live.columns else set()
+        all_ids = set(orev.index)
+        with_ids, wo_ids = all_ids & priv_ids, all_ids - priv_ids
+        mean_of = lambda ids: round(float(orev.reindex(list(ids)).sum()) / len(ids), 2) if ids else 0.0
+        row.update({
+            "Obj. non-private": len(wo_ids),
+            "Obj. private": len(with_ids),
+            "% private": round(len(with_ids) / orders * 100, 2) if orders else 0.0,
+            "AOV non-private": mean_of(wo_ids),
+            "AOV private": mean_of(with_ids),
+        })
+    return row
 
 
 def download_button(df: pd.DataFrame, label: str, key: str) -> None:
@@ -386,10 +389,12 @@ def main() -> None:
     if not sb.checkbox("Include delivery / shipping lines", value=False):
         work = work[~work["_is_delivery"]]
 
-    # Private brands
-    if sb.checkbox("Private brands only", value=False,
-                   help="Match item name against our private brands (accent/case/separator-insensitive)."):
-        work = work[work["_is_private"]]
+    # Private brands. Gates the private split columns in Per-variant, and filters
+    # the Totals/Pivot views to private-brand rows. The filter is applied below
+    # (after work_all is captured) so the Per-variant split keeps both groups.
+    show_private = sb.checkbox(
+        "Private brands only", value=False,
+        help="Show the private-brand split in Per-variant; filter Totals/Pivot to private-brand rows.")
 
     # Generic categorical filters (rendered inline to avoid an expander)
     sb.markdown("**More filters**")
@@ -408,8 +413,11 @@ def main() -> None:
     if term and "commonName" in df.columns:
         work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
 
-    # work_all keeps cancelled rows (for Storno); work applies the cancel rule.
+    # work_all keeps cancelled rows AND both private/non-private (for Storno and the
+    # per-variant private split); work applies the private-only and cancel rules.
     work_all = work.copy()
+    if show_private:
+        work = work[work["_is_private"]]
     if exclude_cancelled:
         work = work[work[COL_CANCEL] != "1"]
 
@@ -433,8 +441,9 @@ def main() -> None:
         download_button(totals_df, "Download totals", "totals")
 
     with tab_variant:
-        # Computed from work_all so Storno (cancelled) is available per variant.
-        rows = [{"Variant": var, **eval_row(grp, use_gross)}
+        # Computed from work_all so Storno (cancelled) and the full private/non-private
+        # split are available regardless of the Totals/Pivot private filter.
+        rows = [{"Variant": var, **eval_row(grp, use_gross, show_private)}
                 for var, grp in work_all.groupby("_variant")]
         vdf = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
 
@@ -448,11 +457,13 @@ def main() -> None:
                 )
 
         # Total row = the same metrics over all selected variants combined.
-        total = {"Variant": "TOTAL", **eval_row(work_all, use_gross)}
+        total = {"Variant": "TOTAL", **eval_row(work_all, use_gross, show_private)}
         vdf = pd.concat([vdf, pd.DataFrame([total])], ignore_index=True)
 
-        st.caption("Private columns use the *Pouze čočky* rule (private-brand contact lenses). "
-                   "Storno is excluded from Revenue/Orders/AOV.")
+        caption = "Storno is excluded from Revenue/Orders/AOV."
+        if show_private:
+            caption += " Private columns use the *Pouze čočky* rule (private-brand contact lenses)."
+        st.caption(caption)
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 
