@@ -391,22 +391,22 @@ def main() -> None:
                    help="Match item name against our private brands (accent/case/separator-insensitive)."):
         work = work[work["_is_private"]]
 
-    # Generic categorical filters
-    with sb.expander("More filters"):
-        for col, label in [("payment", "Payment"),
-                           ("orderDestinationCountryId", "Country"),
-                           ("delivery_type", "Delivery type")]:
-            if col in df.columns:
-                opts = sorted(o for o in df[col].unique() if o)
-                if opts:
-                    sel = st.multiselect(label, opts)
-                    if sel:
-                        work = work[work[col].isin(sel)]
-        term = st.text_input("Item name contains (Czech name)",
-                             help="Searches the Czech commonName. Case-insensitive but "
-                                  "accent-sensitive: 'čoč' matches ČOČ/Čoč but not 'coc'.")
-        if term and "commonName" in df.columns:
-            work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
+    # Generic categorical filters (rendered inline to avoid an expander)
+    sb.markdown("**More filters**")
+    for col, label in [("payment", "Payment"),
+                       ("orderDestinationCountryId", "Country"),
+                       ("delivery_type", "Delivery type")]:
+        if col in df.columns:
+            opts = sorted(o for o in df[col].unique() if o)
+            if opts:
+                sel = sb.multiselect(label, opts)
+                if sel:
+                    work = work[work[col].isin(sel)]
+    term = sb.text_input("Item name contains (Czech name)",
+                         help="Searches the Czech commonName. Case-insensitive but "
+                              "accent-sensitive: 'čoč' matches ČOČ/Čoč but not 'coc'.")
+    if term and "commonName" in df.columns:
+        work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
 
     # work_all keeps cancelled rows (for Storno); work applies the cancel rule.
     work_all = work.copy()
