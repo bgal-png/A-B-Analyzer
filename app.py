@@ -203,8 +203,13 @@ def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True,
     has_profit = bool(profit_col) and profit_col in g.columns
     live = g[g[COL_CANCEL] != "1"] if COL_CANCEL in g.columns else g
     canc = g[g[COL_CANCEL] == "1"] if COL_CANCEL in g.columns else g.iloc[0:0]
-    # Revenue/orders/AOV from product lines; margin from ALL lines incl. shipping.
-    prod = live[~live["_is_delivery"]] if "_is_delivery" in live.columns else live
+    # Revenue/orders/AOV from product lines; margin from ALL lines (incl. shipping/returns).
+    if "_is_product" in live.columns:
+        prod = live[live["_is_product"]]
+    elif "_is_delivery" in live.columns:
+        prod = live[~live["_is_delivery"]]
+    else:
+        prod = live
     orders = int(prod[COL_ORDER].nunique()) if COL_ORDER in prod.columns else 0
     storno = int(canc[COL_ORDER].nunique()) if COL_ORDER in canc.columns else 0
     revenue = float(prod[rev_col].sum()) if rev_col in prod.columns else 0.0
@@ -311,12 +316,13 @@ def main() -> None:
     if COL_FINAL in df.columns and sb.checkbox("Final orders only", value=False):
         work = work[work[COL_FINAL] == "1"]
 
-    # Item type
+    # Item type. Selection stored now and applied to work below. In Per-variant it
+    # constrains revenue (via _is_product) but never the margin, which spans all lines.
+    item_keep = None
     if COL_ITEMTYPE in df.columns:
         types = sorted(t for t in df[COL_ITEMTYPE].unique() if t)
         if types:
-            keep = sb.multiselect("Item type", types, default=types)
-            work = work[work[COL_ITEMTYPE].isin(keep)]
+            item_keep = sb.multiselect("Item type", types, default=types)
 
     # Delivery lines. Applied to work (Totals/Pivot) below; work_all keeps them so the
     # Per-variant margin can include shipping (which carries a negative margin).
@@ -346,12 +352,21 @@ def main() -> None:
     if term and "commonName" in df.columns:
         work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
 
-    # work_all keeps delivery + cancelled + both private/non-private rows, so Per-variant
-    # can compute Storno, the private split, and a shipping-inclusive margin. work applies
-    # the delivery / private-only / cancel rules for the Totals and Pivot views.
+    # _is_product marks the lines that count as product revenue (not delivery, and an
+    # included item type). Per-variant revenue uses it; margin spans every line.
+    is_prod = ~work["_is_delivery"]
+    if item_keep is not None:
+        is_prod = is_prod & work[COL_ITEMTYPE].isin(item_keep)
+    work["_is_product"] = is_prod
+
+    # work_all keeps every line type + cancelled + both private/non-private rows, so
+    # Per-variant can compute Storno, the private split, and a margin that includes
+    # shipping and returns. work applies the visible filters for Totals/Pivot.
     work_all = work.copy()
     if not include_delivery:
         work = work[~work["_is_delivery"]]
+    if item_keep is not None:
+        work = work[work[COL_ITEMTYPE].isin(item_keep)]
     if show_private:
         work = work[work["_is_private"]]
     if exclude_cancelled:
