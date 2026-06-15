@@ -19,6 +19,10 @@ export, then copy or download clean figures for your master sheet.
 - **Revenue basis:** net (`price_clean`) or gross (`price_vat`) × quantity.
 - **Currency:** prices in the file are already in **CZK** and used as-is (the
   `currency` column is just an identifier); figures are labelled `Kč`.
+- **Margins:** when the export includes profit columns, a **Margin basis** selector
+  (Standard = `item_profit`, FIFO = `itemProfitByAccountingFifoPrice`) adds Margin,
+  Margin/obj and Margin % to the views. *Note: the `item_profit` column is only valid
+  when the export's sell prices and purchase prices share a currency (CZK).*
 - **Three views:**
   - **Totals** — one summary row for the current filter.
   - **Per-variant** — one row per variant plus a **TOTAL** row, mirroring the manual
