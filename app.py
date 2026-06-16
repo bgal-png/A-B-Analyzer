@@ -121,6 +121,13 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
         df["_is_lens"] = cname.str.contains("čoč", case=False, na=False)
     df["_is_private_lens"] = df["_is_private"] & df["_is_lens"]
 
+    # Product category (Contact lenses / Solutions / Glasses / …) for filtering and
+    # grouping — independent of the private-brand flag.
+    if "categoriesData-items-type" in df.columns:
+        df["_item_category"] = df["categoriesData-items-type"].fillna("").replace("", "(uncategorized)")
+    else:
+        df["_item_category"] = df["_is_lens"].map({True: "Contact lenses", False: "(uncategorized)"})
+
     df["_margin"] = pd.NA  # placeholder — wired in when a pricelist is added
     return df
 
@@ -237,7 +244,7 @@ def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True,
     if include_private:
         orev = prod.groupby(COL_ORDER)[rev_col].sum() if orders else pd.Series(dtype=float)
         oprof = live.groupby(COL_ORDER)[profit_col].sum() if (orders and has_profit) else pd.Series(dtype=float)
-        priv_ids = set(prod.loc[prod["_is_private_lens"], COL_ORDER]) if "_is_private_lens" in prod.columns else set()
+        priv_ids = set(prod.loc[prod["_is_private"], COL_ORDER]) if "_is_private" in prod.columns else set()
         all_ids = set(orev.index)
         with_ids, wo_ids = all_ids & priv_ids, all_ids - priv_ids
         mean_of = lambda s, ids: round(float(s.reindex(list(ids)).sum()) / len(ids), 2) if ids else 0.0
@@ -333,6 +340,15 @@ def main() -> None:
         if types:
             item_keep = sb.multiselect("Item type", types, default=types)
 
+    # Product category (Contact lenses / Solutions / Glasses / …). Empty = no filter.
+    if "_item_category" in df.columns:
+        cats = sorted(c for c in df["_item_category"].unique() if c and c != "(uncategorized)")
+        sel_cat = sb.multiselect("Product category", cats,
+                                 help="Filter to product categories (lenses, solutions, glasses…). "
+                                      "Leave empty to include everything.")
+        if sel_cat:
+            work = work[work["_item_category"].isin(sel_cat)]
+
     # Delivery lines. Applied to work (Totals/Pivot) below; work_all keeps them so the
     # Per-variant margin can include shipping (which carries a negative margin).
     include_delivery = sb.checkbox("Include delivery / shipping lines", value=False)
@@ -423,16 +439,17 @@ def main() -> None:
         caption = ("Storno is excluded. Revenue/AOV use product lines only; "
                    "Margin includes shipping lines (matching the manual sheet).")
         if show_private:
-            caption += " Private columns use the *Pouze čočky* rule (private-brand contact lenses)."
+            caption += (" Private columns flag orders containing a private brand (any product"
+                        " type); use the Product category filter to restrict to e.g. lenses.")
         st.caption(caption)
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 
     with tab_pivot:
-        candidates = ["_variant", "_brand", "orderDestinationCountryId", "payment",
-                      "delivery_type", "itemname", "commonName", "orderMonth", "orderDay"]
+        candidates = ["_variant", "_brand", "_item_category", "orderDestinationCountryId",
+                      "payment", "delivery_type", "itemname", "commonName", "orderMonth", "orderDay"]
         group_opts = [c for c in candidates if c in work.columns]
-        label_map = {"_variant": "variant", "_brand": "brand"}
+        label_map = {"_variant": "variant", "_brand": "brand", "_item_category": "category"}
         group_by = st.multiselect(
             "Group by", group_opts, default=["_variant"] if "_variant" in group_opts else [],
             format_func=lambda c: label_map.get(c, c),

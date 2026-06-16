@@ -11,12 +11,14 @@ export, then copy or download clean figures for your master sheet.
   double-count. Rows outside the test are excluded.
 - **Filters:** test, variant, date window, exclude cancelled, final-only, item
   type, include/exclude delivery lines, payment, country, delivery type, item name.
-- **Private brands only.** A checkbox restricts results to our private brands.
-  Brand is read from the authoritative `categoriesData-brand` column when the export
-  has it (falling back to accent-/case-insensitive item-name matching otherwise), and
-  the "Pouze čočky" private split uses `categoriesData-items-type == "Contact lenses"`
-  (fallback: commonName contains `čoč`). Brand list lives in `PRIVATE_BRANDS` in
-  [`app.py`](app.py); a `brand` dimension is available in the Custom pivot.
+- **Private brands** = the `PRIVATE_BRANDS` list (any product type), read from the
+  authoritative `categoriesData-brand` column when present (fallback: accent-/case-
+  insensitive item-name matching). The per-variant private split flags orders that
+  contain a private brand regardless of type.
+- **Product category** filter/dimension (Contact lenses / Solutions / Glasses / …)
+  from `categoriesData-items-type` (fallback: lens detection by name). Combine it with
+  the private split to get e.g. private *lenses* only. Brand list lives in
+  `PRIVATE_BRANDS` in [`app.py`](app.py); `brand` and `category` dimensions are in the pivot.
 - **Revenue basis:** net (`price_clean`) or gross (`price_vat`) × quantity.
 - **Currency:** prices in the file are already in **CZK** and used as-is (the
   `currency` column is just an identifier); figures are labelled `Kč`.
