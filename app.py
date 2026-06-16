@@ -100,17 +100,25 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     else:
         df["_is_delivery"] = False
 
-    # Private-brand detection from item name (+ commonName when present).
+    # Private-brand detection. Prefer the authoritative categoriesData-brand column;
+    # fall back to matching the item/common name when the export lacks it.
     iname = df["itemname"] if "itemname" in df.columns else pd.Series("", index=df.index)
     cname = df["commonName"] if "commonName" in df.columns else pd.Series("", index=df.index)
-    df["_brand"] = [detect_brand(a, b) for a, b in zip(iname, cname)]
+    if "categoriesData-brand" in df.columns:
+        norm_to_brand = {normalize_text(b): b for b in PRIVATE_BRANDS}
+        df["_brand"] = df["categoriesData-brand"].fillna("").map(
+            lambda b: norm_to_brand.get(normalize_text(b), ""))
+    else:
+        df["_brand"] = [detect_brand(a, b) for a, b in zip(iname, cname)]
     df["_is_private"] = df["_brand"] != ""
 
-    # Contact-lens flag (Czech commonName contains "čoč"). The private split in the
-    # per-variant report counts orders with a private-brand *contact lens* only
-    # ("Pouze čočky"). NOTE: this name-based rule currently over-counts vs the manual
-    # sheet (≈25 vs 21 on test 280) — calibrate once the exact privátka rule is known.
-    df["_is_lens"] = cname.str.contains("čoč", case=False, na=False)
+    # Contact-lens flag ("Pouze čočky"): prefer categoriesData-items-type == "Contact
+    # lenses"; fall back to the Czech commonName containing "čoč". The private split
+    # counts orders that contain a private-brand contact lens.
+    if "categoriesData-items-type" in df.columns:
+        df["_is_lens"] = df["categoriesData-items-type"].fillna("") == "Contact lenses"
+    else:
+        df["_is_lens"] = cname.str.contains("čoč", case=False, na=False)
     df["_is_private_lens"] = df["_is_private"] & df["_is_lens"]
 
     df["_margin"] = pd.NA  # placeholder — wired in when a pricelist is added
