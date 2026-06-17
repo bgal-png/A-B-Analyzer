@@ -301,6 +301,7 @@ RECOMMENDED_SETTINGS = """\
 - **Owner** (pick one): Alensa s.r.o. · Adrial · Noavidet
 - **Ignore showroom restock orders**
 - **Export catalogue categories**: Brand, Items type
+- **Group by**: Customers
 """
 
 
