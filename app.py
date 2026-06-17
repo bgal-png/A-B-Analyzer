@@ -457,6 +457,17 @@ def main() -> None:
                 st.dataframe(style_money(pdf), use_container_width=True, hide_index=True)
                 download_button(pdf, "Download per-variant (private)", "per_variant_private")
 
+            st.markdown("#### Without private brands")
+            st.caption(f"Full orders that do NOT contain a private brand{cat_note} "
+                       "(complement of the table above).")
+            nonpriv = work_all[~work_all[COL_ORDER].isin(priv_orders)]
+            if nonpriv.empty:
+                st.info("No non-private orders in the current selection.")
+            else:
+                ndf = variant_table(nonpriv)
+                st.dataframe(style_money(ndf), use_container_width=True, hide_index=True)
+                download_button(ndf, "Download per-variant (non-private)", "per_variant_nonpriv")
+
     with tab_pivot:
         candidates = ["_variant", "_brand", "_item_category", "orderDestinationCountryId",
                       "payment", "delivery_type", "itemname", "commonName", "orderMonth", "orderDay"]
