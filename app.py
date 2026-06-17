@@ -265,6 +265,9 @@ EXPORT_SETTINGS = """\
 - Item amount
 - Item price with vat
 - Order item type
+- Payment name
+- Jméno položky
+- Month of order
 """
 
 
