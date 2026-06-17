@@ -249,19 +249,19 @@ def download_button(df: pd.DataFrame, label: str, key: str) -> None:
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
-EXPORT_SETTINGS = """\
-**Tick these columns**
+COLUMNS_TO_TICK = [
+    "AB test name",
+    "AB test variant",
+    "Is order cancelled",
+    "Item amount",
+    "Item price with vat",
+    "Order item type",
+    "Payment name",
+    "Jméno položky",
+    "Month of order",
+]
 
-- AB test name
-- AB test variant
-- Is order cancelled
-- Item amount
-- Item price with vat
-- Order item type
-- Payment name
-- Jméno položky
-- Month of order
-
+RECOMMENDED_SETTINGS = """\
 **Recommended export settings**
 
 - **Convert currency**
@@ -278,7 +278,10 @@ def main() -> None:
     head_l.title("A/B Sales Analyzer")
     with head_r:
         with st.popover("⚙️ Default export settings", use_container_width=True):
-            st.markdown(EXPORT_SETTINGS)
+            st.markdown("**Tick these columns** — hover a line and click 📋 to copy")
+            for col in COLUMNS_TO_TICK:
+                st.code(col, language=None)
+            st.markdown(RECOMMENDED_SETTINGS)
 
     uploaded = st.file_uploader("Upload sales export (CSV or Excel)", type=["csv", "xlsx", "xls"])
     if uploaded is None:
