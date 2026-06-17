@@ -417,8 +417,11 @@ def main() -> None:
 
     # Order state. Cancelled exclusion is applied last so the Per-variant tab can
     # still see cancelled rows to compute the Storno count.
-    exclude_cancelled = (sb.checkbox("Exclude cancelled", value=True)
-                         if COL_CANCEL in df.columns else False)
+    exclude_cancelled = (sb.checkbox(
+        "Exclude cancelled", value=True,
+        help="Affects the Totals and Custom pivot tabs. The Per-variant tab always "
+             "excludes cancelled orders from the money columns and counts them in Storno.")
+        if COL_CANCEL in df.columns else False)
     if COL_FINAL in df.columns and sb.checkbox("Final orders only", value=False):
         work = work[work[COL_FINAL] == "1"]
 
