@@ -259,7 +259,6 @@ EXPORT_SETTINGS = """\
 
 **Columns to keep**
 
-*Required (numbers depend on them):*
 - Order ID · Order timestamp
 - AB test name · AB test variant
 - Item price clean (net) · Item price with vat (gross) · Item amount
@@ -267,13 +266,6 @@ EXPORT_SETTINGS = """\
 - Order item type · Project item id · Common name
 - item_profit · itemProfitByAccountingFifoPrice
 - categoriesData-brand · categoriesData-items-type
-
-*Optional (filters / pivot groupings):*
-- Payment name · Delivery type · Country · Month of order · Order day · Item name
-
-*Not used (safe to drop):*
-- Alternative product (source / from invasive) · Global ID · Global upsell type
-- Item ID · Item multiplier · Showroom name · Storehouse item id + combination id
 """
 
 
