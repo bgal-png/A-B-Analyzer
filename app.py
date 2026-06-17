@@ -367,7 +367,8 @@ def main() -> None:
     sb = st.sidebar
     sb.header("Filters")
 
-    use_gross = sb.radio("Revenue basis", ["Gross", "Net"], horizontal=True) == "Gross"
+    use_gross = sb.radio("Revenue basis", ["Gross", "Net"], horizontal=True,
+                         format_func=lambda x: f"{x} (default)" if x == "Gross" else x) == "Gross"
 
     # Margin basis (only the bases whose source column exists in the file).
     available = {lbl: f"_profit_{lbl.lower()}" for lbl in PROFIT_COLS
@@ -375,6 +376,7 @@ def main() -> None:
     profit_col = None
     if available:
         basis = sb.radio("Margin basis", list(available), horizontal=True,
+                         format_func=lambda x: f"{x} (default)" if x == "Standard" else x,
                          help="Standard = sell − purchase price (item_profit); "
                               "FIFO = sell − accounting FIFO price. Taken from the file as-is (CZK).")
         profit_col = available[basis]
