@@ -250,13 +250,6 @@ def download_button(df: pd.DataFrame, label: str, key: str) -> None:
 # UI
 # --------------------------------------------------------------------------- #
 EXPORT_SETTINGS = """\
-**Recommended export settings**
-
-- **Convert currency → CZK**
-- **Owner** (pick one): Alensa s.r.o. · Adrial · Noavidet
-- **Ignore showroom restock orders**
-- **Export catalogue categories**: Brand, Items type
-
 **Tick these columns**
 
 - AB test name
@@ -268,6 +261,13 @@ EXPORT_SETTINGS = """\
 - Payment name
 - Jméno položky
 - Month of order
+
+**Recommended export settings**
+
+- **Convert currency → CZK**
+- **Owner** (pick one): Alensa s.r.o. · Adrial · Noavidet
+- **Ignore showroom restock orders**
+- **Export catalogue categories**: Brand, Items type
 """
 
 
