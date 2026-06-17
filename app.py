@@ -257,15 +257,22 @@ EXPORT_SETTINGS = """\
 - **Ignore showroom restock orders**
 - **Export catalogue categories**: Brand, Items type
 
-**Columns to keep**
+**Tick these columns**
 
-- Order ID · Order timestamp
-- AB test name · AB test variant
-- Item price clean (net) · Item price with vat (gross) · Item amount
-- Is order cancelled · Order state final
-- Order item type · Project item id · Common name
-- item_profit · itemProfitByAccountingFifoPrice
-- categoriesData-brand · categoriesData-items-type
+- Order ID
+- Order timestamp
+- AB test name
+- AB test variant
+- Item price clean
+- Item price with vat
+- Item amount
+- Is order cancelled
+- Is order final
+- Order item type
+- Project item id
+- Common name
+- Item profit
+- Item profit by accounting FIFO price
 """
 
 
