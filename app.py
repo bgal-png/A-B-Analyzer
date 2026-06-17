@@ -259,20 +259,12 @@ EXPORT_SETTINGS = """\
 
 **Tick these columns**
 
-- Order ID
-- Order timestamp
 - AB test name
 - AB test variant
-- Item price clean
-- Item price with vat
-- Item amount
 - Is order cancelled
-- Is order final
+- Item amount
+- Item price with vat
 - Order item type
-- Project item id
-- Common name
-- Item profit
-- Item profit by accounting FIFO price
 """
 
 
