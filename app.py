@@ -347,14 +347,15 @@ def main() -> None:
         if types:
             item_keep = sb.multiselect("Item type", types, default=types)
 
-    # Product category (Contact lenses / Solutions / Glasses / …). Empty = no filter.
+    # Product category (Contact lenses / Solutions / Glasses / …). Used to *qualify*
+    # which orders count as private in the Private-brands table — it does NOT shrink
+    # the basket (full orders are still measured). Empty = any category qualifies.
+    sel_cat = []
     if "_item_category" in df.columns:
         cats = sorted(c for c in df["_item_category"].unique() if c and c != "(uncategorized)")
-        sel_cat = sb.multiselect("Product category", cats,
-                                 help="Filter to product categories (lenses, solutions, glasses…). "
-                                      "Leave empty to include everything.")
-        if sel_cat:
-            work = work[work["_item_category"].isin(sel_cat)]
+        sel_cat = sb.multiselect("Product category (private cohort)", cats,
+                                 help="In the Private-brands table, only orders containing a "
+                                      "private brand in these categories count. Leave empty for any.")
 
     # Delivery lines. Applied to work (Totals/Pivot) below; work_all keeps them so the
     # Per-variant margin can include shipping (which carries a negative margin).
@@ -439,13 +440,18 @@ def main() -> None:
         download_button(vdf, "Download per-variant", "per_variant")
 
         if show_private:
+            cat_note = (f" in {', '.join(sel_cat)}" if sel_cat else "")
             st.markdown("#### Private brands only")
-            st.caption("Same metrics, restricted to lines from private brands "
-                       f"({', '.join(PRIVATE_BRANDS[:4])}…). "
-                       "Use the Product category filter to narrow to e.g. lenses.")
-            priv = work_all[work_all["_is_private"]]
+            st.caption(f"Full orders that contain a private brand{cat_note} "
+                       "(whole basket measured, like the manual sheet).")
+            # Qualify orders: contain a private-brand line (in the chosen categories).
+            qual = work_all["_is_private"]
+            if sel_cat:
+                qual = qual & work_all["_item_category"].isin(sel_cat)
+            priv_orders = set(work_all.loc[qual, COL_ORDER])
+            priv = work_all[work_all[COL_ORDER].isin(priv_orders)]
             if priv.empty:
-                st.info("No private-brand rows in the current selection.")
+                st.info("No orders with a private brand in the current selection.")
             else:
                 pdf = variant_table(priv)
                 st.dataframe(style_money(pdf), use_container_width=True, hide_index=True)

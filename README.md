@@ -15,10 +15,11 @@ export, then copy or download clean figures for your master sheet.
   authoritative `categoriesData-brand` column when present (fallback: accent-/case-
   insensitive item-name matching). The per-variant private split flags orders that
   contain a private brand regardless of type.
-- **Product category** filter/dimension (Contact lenses / Solutions / Glasses / …)
-  from `categoriesData-items-type` (fallback: lens detection by name). Combine it with
-  the private split to get e.g. private *lenses* only. Brand list lives in
-  `PRIVATE_BRANDS` in [`app.py`](app.py); `brand` and `category` dimensions are in the pivot.
+- **Product category (private cohort)** (Contact lenses / Solutions / Glasses / …)
+  from `categoriesData-items-type` (fallback: lens by name). It selects *which orders*
+  qualify as private in the Private-brands table (e.g. orders with a private contact
+  lens) — it does **not** shrink the basket. Brand list lives in `PRIVATE_BRANDS` in
+  [`app.py`](app.py); `brand` and `category` dimensions are in the pivot.
 - **Revenue basis:** net (`price_clean`) or gross (`price_vat`) × quantity.
 - **Currency:** prices in the file are already in **CZK** and used as-is (the
   `currency` column is just an identifier); figures are labelled `Kč`.
@@ -30,9 +31,9 @@ export, then copy or download clean figures for your master sheet.
   - **Totals** — one summary row for the current filter.
   - **Per-variant** — one row per variant plus a **TOTAL** row, mirroring the manual
     evaluation sheet: Orders, **Storno** (cancelled) + % storno, Revenue, AOV, Margin,
-    Margin/obj, Margin %, and % difference vs a chosen baseline. When **Private brands
-    only** is checked, a **second table** appears below with the same columns computed
-    over private-brand rows only.
+    Margin/obj, Margin %. When **Private brands only** is checked, a **second table**
+    appears below with the same columns computed over the **full orders that contain a
+    private brand** (whole basket, matching the department's "jen privátní čočky").
   - **Custom pivot** — group by any columns × metrics.
 - **Export:** every view has a Download CSV button (semicolon, UTF-8 BOM — Excel-friendly).
 
