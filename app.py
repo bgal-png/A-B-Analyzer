@@ -425,24 +425,16 @@ def main() -> None:
 
     with tab_variant:
         # Computed from work_all so Storno (cancelled) is available per variant.
-        def variant_table(src: pd.DataFrame, baseline_key: str) -> pd.DataFrame:
+        def variant_table(src: pd.DataFrame) -> pd.DataFrame:
             rows = [{"Variant": var, **eval_row(grp, use_gross, profit_col)}
                     for var, grp in src.groupby("_variant")]
             t = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
-            if len(t) > 1:
-                base_var = st.selectbox("Baseline variant (for % diff)", t["Variant"].tolist(),
-                                        key=baseline_key)
-                base = t[t["Variant"] == base_var].iloc[0]
-                for metric in ["Revenue", "Orders", "AOV"]:
-                    b = base[metric]
-                    t[f"{metric} Δ%"] = t[metric].apply(
-                        lambda x: round((x - b) / b * 100, 2) if b else None)
             total = {"Variant": "TOTAL", **eval_row(src, use_gross, profit_col)}
             return pd.concat([t, pd.DataFrame([total])], ignore_index=True)
 
         st.caption("Storno is excluded. Revenue/AOV use product lines only; "
                    "Margin includes shipping lines (matching the manual sheet).")
-        vdf = variant_table(work_all, "baseline_all")
+        vdf = variant_table(work_all)
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 
@@ -455,7 +447,7 @@ def main() -> None:
             if priv.empty:
                 st.info("No private-brand rows in the current selection.")
             else:
-                pdf = variant_table(priv, "baseline_priv")
+                pdf = variant_table(priv)
                 st.dataframe(style_money(pdf), use_container_width=True, hide_index=True)
                 download_button(pdf, "Download per-variant (private)", "per_variant_private")
 
