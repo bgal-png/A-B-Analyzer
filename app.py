@@ -241,23 +241,28 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     return df.style.format(fmt)
 
 
-def eval_row(g: pd.DataFrame, use_gross: bool, profit_col: str | None = None) -> dict:
-    """Master-sheet-style metrics for a variant slice that still includes cancelled rows."""
+def eval_row(g: pd.DataFrame, use_gross: bool, profit_col: str | None = None,
+             exclude_cancelled: bool = True) -> dict:
+    """Master-sheet-style metrics for a variant slice (which still includes cancelled rows).
+
+    Storno is always reported; when exclude_cancelled is False the cancelled orders are
+    also folded into Revenue/Orders/Margin.
+    """
     rev_col = "_rev_gross" if use_gross else "_rev_net"
     has_profit = bool(profit_col) and profit_col in g.columns
-    live = g[g[COL_CANCEL] != "1"] if COL_CANCEL in g.columns else g
     canc = g[g[COL_CANCEL] == "1"] if COL_CANCEL in g.columns else g.iloc[0:0]
+    base = g[g[COL_CANCEL] != "1"] if (exclude_cancelled and COL_CANCEL in g.columns) else g
     # Revenue/orders/AOV from product lines; margin from ALL lines (incl. shipping/returns).
-    if "_is_product" in live.columns:
-        prod = live[live["_is_product"]]
-    elif "_is_delivery" in live.columns:
-        prod = live[~live["_is_delivery"]]
+    if "_is_product" in base.columns:
+        prod = base[base["_is_product"]]
+    elif "_is_delivery" in base.columns:
+        prod = base[~base["_is_delivery"]]
     else:
-        prod = live
+        prod = base
     orders = int(prod[COL_ORDER].nunique()) if COL_ORDER in prod.columns else 0
     storno = int(canc[COL_ORDER].nunique()) if COL_ORDER in canc.columns else 0
     revenue = float(prod[rev_col].sum()) if rev_col in prod.columns else 0.0
-    margin = float(live[profit_col].sum()) if has_profit else 0.0
+    margin = float(base[profit_col].sum()) if has_profit else 0.0
 
     row = {
         "Orders": orders,
@@ -419,8 +424,8 @@ def main() -> None:
     # still see cancelled rows to compute the Storno count.
     exclude_cancelled = (sb.checkbox(
         "Exclude cancelled", value=True,
-        help="Affects the Totals and Custom pivot tabs. The Per-variant tab always "
-             "excludes cancelled orders from the money columns and counts them in Storno.")
+        help="When on, cancelled orders are removed from Revenue/Orders/Margin everywhere "
+             "(Storno still counts them). Untick to fold cancelled orders back into the totals.")
         if COL_CANCEL in df.columns else False)
     if COL_FINAL in df.columns and sb.checkbox("Final orders only", value=False):
         work = work[work[COL_FINAL] == "1"]
@@ -513,13 +518,15 @@ def main() -> None:
     with tab_variant:
         # Computed from work_all so Storno (cancelled) is available per variant.
         def variant_table(src: pd.DataFrame) -> pd.DataFrame:
-            rows = [{"Variant": var, **eval_row(grp, use_gross, profit_col)}
+            rows = [{"Variant": var, **eval_row(grp, use_gross, profit_col, exclude_cancelled)}
                     for var, grp in src.groupby("_variant")]
             t = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
-            total = {"Variant": "TOTAL", **eval_row(src, use_gross, profit_col)}
+            total = {"Variant": "TOTAL", **eval_row(src, use_gross, profit_col, exclude_cancelled)}
             return pd.concat([t, pd.DataFrame([total])], ignore_index=True)
 
-        st.caption("Storno is excluded. Revenue/Avg. Order Val. use product lines only; "
+        cancel_note = ("Storno is excluded from the money columns"
+                       if exclude_cancelled else "Storno is INCLUDED in the money columns")
+        st.caption(f"{cancel_note}. Revenue/Avg. Order Val. use product lines only; "
                    "Margin includes shipping lines (matching the manual sheet).")
         vdf = variant_table(work_all)
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
