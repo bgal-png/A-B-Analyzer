@@ -249,9 +249,41 @@ def download_button(df: pd.DataFrame, label: str, key: str) -> None:
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
+EXPORT_SETTINGS = """\
+**Recommended export settings**
+
+- **Convert currency → CZK**
+- **Owner** (pick one): Alensa s.r.o. · Adrial · Noavidet
+- **Ignore showroom restock orders**
+- **Export catalogue categories**: Brand, Items type
+
+**Columns to keep**
+
+*Required (numbers depend on them):*
+- Order ID · Order timestamp
+- AB test name · AB test variant
+- Item price clean (net) · Item price with vat (gross) · Item amount
+- Is order cancelled · Order state final
+- Order item type · Project item id · Common name
+- item_profit · itemProfitByAccountingFifoPrice
+- categoriesData-brand · categoriesData-items-type
+
+*Optional (filters / pivot groupings):*
+- Payment name · Delivery type · Country · Month of order · Order day · Item name
+
+*Not used (safe to drop):*
+- Alternative product (source / from invasive) · Global ID · Global upsell type
+- Item ID · Item multiplier · Showroom name · Storehouse item id + combination id
+"""
+
+
 def main() -> None:
     st.set_page_config(page_title="A/B Sales Analyzer", layout="wide")
-    st.title("A/B Sales Analyzer")
+    head_l, head_r = st.columns([4, 1], vertical_alignment="center")
+    head_l.title("A/B Sales Analyzer")
+    with head_r:
+        with st.popover("⚙️ Default export settings", use_container_width=True):
+            st.markdown(EXPORT_SETTINGS)
 
     uploaded = st.file_uploader("Upload sales export (CSV or Excel)", type=["csv", "xlsx", "xls"])
     if uploaded is None:
