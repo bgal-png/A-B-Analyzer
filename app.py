@@ -88,21 +88,33 @@ def detect_brand(*names: str) -> str:
 # --------------------------------------------------------------------------- #
 # Loading & preparation
 # --------------------------------------------------------------------------- #
-@st.cache_data(show_spinner=False)
+# Only these columns are read — keeps memory down on large exports (Streamlit Cloud).
+USED_COLUMNS = {
+    COL_ORDER, COL_TS, COL_PRICE_NET, COL_PRICE_GROSS, COL_AMOUNT, COL_TEST, COL_VARIANT,
+    COL_CANCEL, COL_FINAL, COL_ITEMTYPE, COL_PROJITEM, COL_PROJECT,
+    "itemname", "commonName", "payment", "orderDestinationCountryId", "delivery_type",
+    "orderMonth", "orderDay", "categoriesData-brand", "categoriesData-items-type",
+    *PROFIT_COLS.values(),
+}
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
 def load_data(raw: bytes, name: str) -> pd.DataFrame:
-    """Parse the uploaded export into a typed DataFrame."""
+    """Parse the uploaded export into a typed DataFrame (only the columns we use)."""
+    wanted = lambda c: str(c).strip() in USED_COLUMNS
     if name.lower().endswith((".xlsx", ".xls")):
-        df = pd.read_excel(io.BytesIO(raw), dtype=str)
+        df = pd.read_excel(io.BytesIO(raw), dtype=str, usecols=wanted)
     else:
         # Semicolon-delimited, UTF-8 BOM. Read as str, coerce numerics after.
         df = pd.read_csv(
-            io.BytesIO(raw), sep=";", dtype=str,
+            io.BytesIO(raw), sep=";", dtype=str, usecols=wanted,
             encoding="utf-8-sig", keep_default_na=False,
         )
     df.columns = [c.strip() for c in df.columns]
     # Excel cells come back as NaN for blanks; normalise to "" so string ops and
     # filter sorts behave like the CSV path (which uses keep_default_na=False).
-    df = df.astype(object).where(df.notna(), "")
+    if df.isna().any().any():
+        df = df.fillna("")
 
     for col in (COL_PRICE_NET, COL_PRICE_GROSS, COL_AMOUNT, *PROFIT_COLS.values()):
         if col in df.columns:
@@ -162,7 +174,11 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
         df["_project"] = df[COL_PROJECT].astype(str).str.strip().map(
             lambda x: f"{PROJECT_NAMES.get(x, 'project ' + x)} ({x})")
 
-    df["_margin"] = pd.NA  # placeholder — wired in when a pricelist is added
+    # Drop raw source columns now folded into derived ones — frees memory on big files.
+    spent = [COL_PRICE_NET, COL_PRICE_GROSS, COL_TS, COL_PROJITEM, COL_PROJECT,
+             "categoriesData-brand", "categoriesData-items-type", "_is_lens",
+             *PROFIT_COLS.values()]
+    df = df.drop(columns=[c for c in spent if c in df.columns])
     return df
 
 
@@ -180,7 +196,7 @@ def variant_in_test(name_field: str, variant_field: str, test: str) -> str | Non
     return None
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def test_options(df: pd.DataFrame) -> list[str]:
     """Distinct individual test ids present (pipe-combos split out)."""
     if COL_TEST not in df.columns:
@@ -192,11 +208,6 @@ def test_options(df: pd.DataFrame) -> list[str]:
             if tok:
                 seen.add(tok)
     return sorted(seen, key=lambda x: (len(x), x))
-
-
-def compute_margin(df: pd.DataFrame, pricelist: pd.DataFrame | None = None) -> pd.Series:
-    """Placeholder margin hook. Returns NA until a pricelist join is implemented."""
-    return pd.Series(pd.NA, index=df.index)
 
 
 # --------------------------------------------------------------------------- #
