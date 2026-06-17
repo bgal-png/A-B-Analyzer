@@ -264,7 +264,8 @@ EXPORT_SETTINGS = """\
 
 **Recommended export settings**
 
-- **Convert currency → CZK**
+- **Convert currency**
+- **CZK**
 - **Owner** (pick one): Alensa s.r.o. · Adrial · Noavidet
 - **Ignore showroom restock orders**
 - **Export catalogue categories**: Brand, Items type
