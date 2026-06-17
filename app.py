@@ -11,6 +11,7 @@ import unicodedata
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Columns we rely on. Missing ones degrade gracefully.
 COL_ORDER = "orderId"
@@ -303,15 +304,53 @@ RECOMMENDED_SETTINGS = """\
 """
 
 
+def render_copy_list(items: list[str]) -> None:
+    """Compact list with a per-row copy-to-clipboard button."""
+    rows = "".join(
+        f'<li><span>{c}</span>'
+        f'<button title="Copy" onclick="cp(this,\'{c}\')">📋</button></li>'
+        for c in items
+    )
+    html = f"""
+    <style>
+      body {{ margin:0; background:transparent; }}
+      ul.cl {{ list-style:none; padding:0; margin:0;
+               font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; }}
+      ul.cl li {{ display:flex; align-items:center; justify-content:space-between;
+                  gap:8px; padding:1px 4px; color:#e6e6e6; }}
+      ul.cl li:hover {{ background:rgba(255,255,255,.06); border-radius:4px; }}
+      ul.cl button {{ background:none; border:none; cursor:pointer; font-size:12px;
+                      opacity:.55; padding:0 2px; }}
+      ul.cl button:hover {{ opacity:1; }}
+    </style>
+    <ul class="cl">{rows}</ul>
+    <script>
+      function cp(btn, text) {{
+        const done = () => {{ const o=btn.textContent; btn.textContent='✓';
+                              setTimeout(()=>btn.textContent=o, 800); }};
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+          navigator.clipboard.writeText(text).then(done).catch(()=>fallback(text, done));
+        }} else {{ fallback(text, done); }}
+      }}
+      function fallback(text, done) {{
+        const t=document.createElement('textarea'); t.value=text;
+        document.body.appendChild(t); t.select();
+        try {{ document.execCommand('copy'); }} catch(e) {{}}
+        document.body.removeChild(t); done();
+      }}
+    </script>
+    """
+    components.html(html, height=len(items) * 24 + 8)
+
+
 def main() -> None:
     st.set_page_config(page_title="A/B Sales Analyzer", layout="wide")
     head_l, head_r = st.columns([4, 1], vertical_alignment="center")
     head_l.title("A/B Sales Analyzer")
     with head_r:
         with st.popover("⚙️ Default export settings", use_container_width=True):
-            st.markdown("**Tick these columns** — hover a line and click 📋 to copy")
-            for col in COLUMNS_TO_TICK:
-                st.code(col, language=None)
+            st.markdown("**Tick these columns** — click 📋 to copy")
+            render_copy_list(COLUMNS_TO_TICK)
             st.markdown(RECOMMENDED_SETTINGS)
 
     uploaded = st.file_uploader("Upload sales export (CSV or Excel)", type=["csv", "xlsx", "xls"])
