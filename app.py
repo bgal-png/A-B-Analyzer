@@ -100,6 +100,9 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
             encoding="utf-8-sig", keep_default_na=False,
         )
     df.columns = [c.strip() for c in df.columns]
+    # Excel cells come back as NaN for blanks; normalise to "" so string ops and
+    # filter sorts behave like the CSV path (which uses keep_default_na=False).
+    df = df.astype(object).where(df.notna(), "")
 
     for col in (COL_PRICE_NET, COL_PRICE_GROSS, COL_AMOUNT, *PROFIT_COLS.values()):
         if col in df.columns:
