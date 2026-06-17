@@ -167,7 +167,7 @@ def compute_margin(df: pd.DataFrame, pricelist: pd.DataFrame | None = None) -> p
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
-MONEY_COLS = ("Revenue", "AOV", "Margin", "Margin/obj")
+MONEY_COLS = ("Revenue", "Avg. Order Val.", "Margin", "Margin/obj")
 
 
 def metrics_for(df: pd.DataFrame, use_gross: bool, profit_col: str | None = None) -> dict[str, float]:
@@ -181,7 +181,7 @@ def metrics_for(df: pd.DataFrame, use_gross: bool, profit_col: str | None = None
     m = {
         "Orders": orders,
         "Revenue": round(revenue, 2),
-        "AOV": round(revenue / orders, 2) if orders else 0.0,
+        "Avg. Order Val.": round(revenue / orders, 2) if orders else 0.0,
     }
     if profit_col and profit_col in df.columns:
         margin = float(df[profit_col].sum())
@@ -232,7 +232,7 @@ def eval_row(g: pd.DataFrame, use_gross: bool, profit_col: str | None = None) ->
         "Storno": storno,
         "% storno": round(storno / orders * 100, 2) if orders else 0.0,
         "Revenue": round(revenue, 2),
-        "AOV": round(revenue / orders, 2) if orders else 0.0,
+        "Avg. Order Val.": round(revenue / orders, 2) if orders else 0.0,
     }
     if has_profit:
         row["Margin"] = round(margin, 2)
@@ -432,7 +432,7 @@ def main() -> None:
             total = {"Variant": "TOTAL", **eval_row(src, use_gross, profit_col)}
             return pd.concat([t, pd.DataFrame([total])], ignore_index=True)
 
-        st.caption("Storno is excluded. Revenue/AOV use product lines only; "
+        st.caption("Storno is excluded. Revenue/Avg. Order Val. use product lines only; "
                    "Margin includes shipping lines (matching the manual sheet).")
         vdf = variant_table(work_all)
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
