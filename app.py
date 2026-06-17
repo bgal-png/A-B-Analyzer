@@ -119,7 +119,6 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
         df["_is_lens"] = df["categoriesData-items-type"].fillna("") == "Contact lenses"
     else:
         df["_is_lens"] = cname.str.contains("čoč", case=False, na=False)
-    df["_is_private_lens"] = df["_is_private"] & df["_is_lens"]
 
     # Product category (Contact lenses / Solutions / Glasses / …) for filtering and
     # grouping — independent of the private-brand flag.
@@ -168,8 +167,7 @@ def compute_margin(df: pd.DataFrame, pricelist: pd.DataFrame | None = None) -> p
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
-MONEY_COLS = ("Revenue", "AOV", "AOV private", "AOV non-private",
-              "Margin", "Margin/obj", "Margin/obj private", "Margin/obj non-private")
+MONEY_COLS = ("Revenue", "AOV", "Margin", "Margin/obj")
 
 
 def metrics_for(df: pd.DataFrame, use_gross: bool, profit_col: str | None = None) -> dict[str, float]:
@@ -211,8 +209,7 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     return df.style.format(fmt)
 
 
-def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True,
-             profit_col: str | None = None) -> dict:
+def eval_row(g: pd.DataFrame, use_gross: bool, profit_col: str | None = None) -> dict:
     """Master-sheet-style metrics for a variant slice that still includes cancelled rows."""
     rev_col = "_rev_gross" if use_gross else "_rev_net"
     has_profit = bool(profit_col) and profit_col in g.columns
@@ -241,23 +238,6 @@ def eval_row(g: pd.DataFrame, use_gross: bool, include_private: bool = True,
         row["Margin"] = round(margin, 2)
         row["Margin/obj"] = round(margin / orders, 2) if orders else 0.0
         row["Margin %"] = round(margin / revenue * 100, 2) if revenue else 0.0
-    if include_private:
-        orev = prod.groupby(COL_ORDER)[rev_col].sum() if orders else pd.Series(dtype=float)
-        oprof = live.groupby(COL_ORDER)[profit_col].sum() if (orders and has_profit) else pd.Series(dtype=float)
-        priv_ids = set(prod.loc[prod["_is_private"], COL_ORDER]) if "_is_private" in prod.columns else set()
-        all_ids = set(orev.index)
-        with_ids, wo_ids = all_ids & priv_ids, all_ids - priv_ids
-        mean_of = lambda s, ids: round(float(s.reindex(list(ids)).sum()) / len(ids), 2) if ids else 0.0
-        row.update({
-            "Obj. non-private": len(wo_ids),
-            "Obj. private": len(with_ids),
-            "% private": round(len(with_ids) / orders * 100, 2) if orders else 0.0,
-            "AOV non-private": mean_of(orev, wo_ids),
-            "AOV private": mean_of(orev, with_ids),
-        })
-        if has_profit:
-            row["Margin/obj non-private"] = mean_of(oprof, wo_ids)
-            row["Margin/obj private"] = mean_of(oprof, with_ids)
     return row
 
 
@@ -417,33 +397,40 @@ def main() -> None:
         download_button(totals_df, "Download totals", "totals")
 
     with tab_variant:
-        # Computed from work_all so Storno (cancelled) and the full private/non-private
-        # split are available regardless of the Totals/Pivot private filter.
-        rows = [{"Variant": var, **eval_row(grp, use_gross, show_private, profit_col)}
-                for var, grp in work_all.groupby("_variant")]
-        vdf = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
+        # Computed from work_all so Storno (cancelled) is available per variant.
+        def variant_table(src: pd.DataFrame, baseline_key: str) -> pd.DataFrame:
+            rows = [{"Variant": var, **eval_row(grp, use_gross, profit_col)}
+                    for var, grp in src.groupby("_variant")]
+            t = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
+            if len(t) > 1:
+                base_var = st.selectbox("Baseline variant (for % diff)", t["Variant"].tolist(),
+                                        key=baseline_key)
+                base = t[t["Variant"] == base_var].iloc[0]
+                for metric in ["Revenue", "Orders", "AOV"]:
+                    b = base[metric]
+                    t[f"{metric} Δ%"] = t[metric].apply(
+                        lambda x: round((x - b) / b * 100, 2) if b else None)
+            total = {"Variant": "TOTAL", **eval_row(src, use_gross, profit_col)}
+            return pd.concat([t, pd.DataFrame([total])], ignore_index=True)
 
-        if len(vdf) > 1:
-            baseline = st.selectbox("Baseline variant (for % diff)", vdf["Variant"].tolist())
-            base = vdf[vdf["Variant"] == baseline].iloc[0]
-            for metric in ["Revenue", "Orders", "AOV"]:
-                b = base[metric]
-                vdf[f"{metric} Δ%"] = vdf[metric].apply(
-                    lambda x: round((x - b) / b * 100, 2) if b else None
-                )
-
-        # Total row = the same metrics over all selected variants combined.
-        total = {"Variant": "TOTAL", **eval_row(work_all, use_gross, show_private, profit_col)}
-        vdf = pd.concat([vdf, pd.DataFrame([total])], ignore_index=True)
-
-        caption = ("Storno is excluded. Revenue/AOV use product lines only; "
+        st.caption("Storno is excluded. Revenue/AOV use product lines only; "
                    "Margin includes shipping lines (matching the manual sheet).")
-        if show_private:
-            caption += (" Private columns flag orders containing a private brand (any product"
-                        " type); use the Product category filter to restrict to e.g. lenses.")
-        st.caption(caption)
+        vdf = variant_table(work_all, "baseline_all")
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
+
+        if show_private:
+            st.markdown("#### Private brands only")
+            st.caption("Same metrics, restricted to lines from private brands "
+                       f"({', '.join(PRIVATE_BRANDS[:4])}…). "
+                       "Use the Product category filter to narrow to e.g. lenses.")
+            priv = work_all[work_all["_is_private"]]
+            if priv.empty:
+                st.info("No private-brand rows in the current selection.")
+            else:
+                pdf = variant_table(priv, "baseline_priv")
+                st.dataframe(style_money(pdf), use_container_width=True, hide_index=True)
+                download_button(pdf, "Download per-variant (private)", "per_variant_private")
 
     with tab_pivot:
         candidates = ["_variant", "_brand", "_item_category", "orderDestinationCountryId",

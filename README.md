@@ -29,10 +29,10 @@ export, then copy or download clean figures for your master sheet.
 - **Three views:**
   - **Totals** — one summary row for the current filter.
   - **Per-variant** — one row per variant plus a **TOTAL** row, mirroring the manual
-    evaluation sheet: Orders, **Storno** (cancelled) + % storno, Revenue, AOV, and a
-    private-brand split (orders with/without a private-brand contact lens, % and AOV
-    each). % difference vs a chosen baseline. *Private split uses the "Pouze čočky"
-    rule and is pending calibration against the exact privátka definition.*
+    evaluation sheet: Orders, **Storno** (cancelled) + % storno, Revenue, AOV, Margin,
+    Margin/obj, Margin %, and % difference vs a chosen baseline. When **Private brands
+    only** is checked, a **second table** appears below with the same columns computed
+    over private-brand rows only.
   - **Custom pivot** — group by any columns × metrics.
 - **Export:** every view has a Download CSV button (semicolon, UTF-8 BOM — Excel-friendly).
 
