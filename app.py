@@ -24,6 +24,32 @@ COL_CANCEL = "orderstatecancel"
 COL_FINAL = "orderstatefinal"
 COL_ITEMTYPE = "orderItemType"
 COL_PROJITEM = "projectItemId"
+COL_PROJECT = "ref_projects"
+
+# ref_projects id → eshop domain.
+PROJECT_NAMES = {
+    "49": "adrial.eu", "117": "adrialece.ba", "41": "adrialece.hr", "40": "adrialenti.it",
+    "114": "alensa.ae", "64": "alensa.at", "71": "alensa.be", "72": "alensa.be.fr",
+    "24": "alensa.bg", "104": "alensa.ch", "111": "alensa.co.il", "17": "alensa.co.uk",
+    "115": "alensa.com", "92": "alensa.com.mt", "95": "alensa.cz", "81": "alensa.de",
+    "67": "alensa.dk", "83": "alensa.ee", "96": "alensa.es", "73": "alensa.fi",
+    "51": "alensa.fr", "50": "alensa.gr", "70": "alensa.hr", "76": "alensa.hu",
+    "78": "alensa.ie", "75": "alensa.it", "93": "alensa.lt", "119": "alensa.lu",
+    "94": "alensa.lv", "60": "alensa.nl", "69": "alensa.no", "77": "alensa.pl",
+    "68": "alensa.pt", "85": "alensa.rs", "62": "alensa.ru", "82": "alensa.se",
+    "74": "alensa.si", "8": "alensa.sk", "65": "alensa.ua", "2": "cocky-kontaktni.cz",
+    "36": "cocky-online.cz", "7": "cocky-optika.cz", "20": "contact-lentile.ro",
+    "112": "crulle.at", "102": "crulle.com", "106": "crulle.de", "113": "crulle.dk",
+    "107": "crulle.es", "108": "crulle.hu", "109": "crulle.pl", "110": "crulle.pt",
+    "38": "ihre-kontaktlinsen.de", "26": "kontaktlinsen-billig.at",
+    "46": "kontaktlinsen-billig.ch", "35": "kontaktnesosovky.net", "12": "kontaktni.cz",
+    "32": "kontaktnicocky.net", "101": "lecka.net", "39": "lencsebolt.hu",
+    "33": "lensboss.ovh", "79": "lentekontakti.al", "91": "lentekontakti.com",
+    "47": "lentes-de-contacto.es", "34": "lentes-shop.es", "18": "lenti-ottica.it",
+    "15": "leshti.bg", "116": "mataki.gr", "53": "moje-lece.si", "103": "narocilabausch.si",
+    "90": "objednavkybausch.cz", "97": "objednavkybausch.sk", "25": "sosovky-kontaktne.sk",
+    "86": "vallismg.si", "87": "videt.ro", "28": "xlentile.ro",
+}
 
 # Per-item profit columns (CZK). "Standard" = sell − purchase price;
 # "FIFO" = sell − accounting FIFO purchase price.
@@ -126,6 +152,11 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
         df["_item_category"] = df["categoriesData-items-type"].fillna("").replace("", "(uncategorized)")
     else:
         df["_item_category"] = df["_is_lens"].map({True: "Contact lenses", False: "(uncategorized)"})
+
+    # Project / eshop label from ref_projects id.
+    if COL_PROJECT in df.columns:
+        df["_project"] = df[COL_PROJECT].astype(str).str.strip().map(
+            lambda x: f"{PROJECT_NAMES.get(x, 'project ' + x)} ({x})")
 
     df["_margin"] = pd.NA  # placeholder — wired in when a pricelist is added
     return df
@@ -327,6 +358,13 @@ def main() -> None:
     else:
         work["_variant"] = work.get(COL_VARIANT, "").replace("", "(none)")
 
+    # Project / eshop (only when the export spans more than one). Empty = all.
+    if "_project" in df.columns and df["_project"].nunique() > 1:
+        projs = sorted(df["_project"].unique())
+        sel_proj = sb.multiselect("Project / eshop", projs)
+        if sel_proj:
+            work = work[work["_project"].isin(sel_proj)]
+
     # Date window
     if "_order_dt" in df.columns and df["_order_dt"].notna().any():
         dmin = df["_order_dt"].min().date()
@@ -472,10 +510,12 @@ def main() -> None:
                 download_button(ndf, "Download per-variant (non-private)", "per_variant_nonpriv")
 
     with tab_pivot:
-        candidates = ["_variant", "_brand", "_item_category", "orderDestinationCountryId",
-                      "payment", "delivery_type", "itemname", "commonName", "orderMonth", "orderDay"]
+        candidates = ["_variant", "_brand", "_item_category", "_project",
+                      "orderDestinationCountryId", "payment", "delivery_type",
+                      "itemname", "commonName", "orderMonth", "orderDay"]
         group_opts = [c for c in candidates if c in work.columns]
-        label_map = {"_variant": "variant", "_brand": "brand", "_item_category": "category"}
+        label_map = {"_variant": "variant", "_brand": "brand", "_item_category": "category",
+                     "_project": "project"}
         group_by = st.multiselect(
             "Group by", group_opts, default=["_variant"] if "_variant" in group_opts else [],
             format_func=lambda c: label_map.get(c, c),
