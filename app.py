@@ -38,21 +38,55 @@ def vwo_primary_counts(data: dict) -> dict[str, dict]:
             for v, d in primary.get("aggregatedData", {}).items()}
 
 
-def vwo_variation_table(data: dict, goal_id: int | None = None) -> pd.DataFrame:
-    """Per-variation Visitors / Conversions / Conv. rate % for the chosen (or primary) goal."""
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=4)
+def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
+    """List campaigns: [{id, name, type, status}], or None. Defensive about the wrapper shape."""
+    try:
+        url = f"https://app.vwo.com/api/v2/accounts/{account_id}/campaigns?limit=1000"
+        req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
+        payload = json.loads(urllib.request.urlopen(req, timeout=25).read().decode("utf-8"))
+        from collections import deque
+        q, found = deque([payload]), None  # find the first list of campaign-like dicts
+        while q:
+            x = q.popleft()
+            if isinstance(x, list) and x and isinstance(x[0], dict) and "id" in x[0] and "name" in x[0]:
+                found = x
+                break
+            if isinstance(x, dict):
+                q.extend(x.values())
+            elif isinstance(x, list):
+                q.extend(x)
+        if not found:
+            return None
+        return [{"id": str(c.get("id")), "name": c.get("name", ""),
+                 "type": c.get("type", ""), "status": c.get("status", "")}
+                for c in found if c.get("id") is not None]
+    except Exception:
+        return None
+
+
+def vwo_all_goals_table(data: dict) -> pd.DataFrame:
+    """Per-variation table with Visitors + every goal's conversions / CR% (+ revenue if present)."""
     goals = data.get("goals", [])
-    goal = next((g for g in goals if g.get("id") == goal_id), None) if goal_id else None
-    goal = goal or next((g for g in goals if g.get("isPrimary")), goals[0] if goals else {})
-    agg = goal.get("aggregatedData", {})
     names = {str(v["id"]): v.get("name", "") for v in data.get("variations", [])}
     ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
+    primary = next((g for g in goals if g.get("isPrimary")), goals[0] if goals else {})
+    vids = sorted(primary.get("aggregatedData", {}), key=lambda x: (len(x), x))
     rows = []
-    for vid in sorted(agg, key=lambda x: (len(x), x)):
-        vis = int(agg[vid].get("visitorCount", 0))
-        conv = int(agg[vid].get("conversionCount", 0))
-        label = f"{vid} · {names.get(vid, '')}" + (" (control)" if vid in ctrl else "")
-        rows.append({"Variation": label, "Visitors": vis, "Conversions": conv,
-                     "Conv. rate %": round(conv / vis * 100, 2) if vis else None})
+    for vid in vids:
+        vis = int(primary.get("aggregatedData", {}).get(vid, {}).get("visitorCount", 0))
+        row = {"Variation": f"{vid} · {names.get(vid, '')}" + (" (ctrl)" if vid in ctrl else ""),
+               "Visitors": vis}
+        for g in goals:
+            gname = g.get("name", f"Goal {g.get('id')}")
+            ad = g.get("aggregatedData", {}).get(vid, {})
+            gvis = int(ad.get("visitorCount", 0)) or vis
+            conv = int(ad.get("conversionCount", 0))
+            row[f"{gname} · conv"] = conv
+            row[f"{gname} · CR%"] = round(conv / gvis * 100, 2) if gvis else None
+            if "totalRevenue" in ad:
+                row[f"{gname} · rev"] = round(float(ad.get("totalRevenue", 0)), 2)
+        rows.append(row)
     return pd.DataFrame(rows)
 
 # Columns we rely on. Missing ones degrade gracefully.
@@ -417,33 +451,37 @@ def render_vwo_page() -> None:
     if not token:
         st.info("Add `vwo_token` (and `vwo_account_id`) to Streamlit secrets to use this section.")
         return
-    st.caption("Live from VWO — visitors & conversions per variation. Each campaign is one "
-               "cached API call. Counts are campaign-wide (across all eshops in the test).")
 
-    ids_raw = st.text_input("Campaign / test IDs", placeholder="e.g. 284, 283, 221")
-    ids = [x.strip() for x in ids_raw.split(",") if x.strip()]
+    campaigns = fetch_vwo_campaign_list(str(acc), token)
+    if campaigns:
+        # Searchable picker; select 2+ to compare (e.g. a desktop vs a mobile/tablet campaign).
+        def label(c):
+            s = f"  · {c['status']}" if c["status"] else ""
+            return f"{c['id']} — {c['name']}{s}"
+        by_label = {label(c): c["id"] for c in sorted(campaigns, key=lambda c: c["name"].lower())}
+        chosen = st.multiselect("Tests — search by name or id (pick 2+ to compare)", list(by_label))
+        ids = [by_label[c] for c in chosen]
+        st.caption(f"{len(campaigns)} campaigns available. VWO device segments aren't exposed by "
+                   "the API — compare your device-specific campaigns (e.g. desktop vs mobile) side by side.")
+    else:
+        st.caption("Couldn't load the campaign list (token/plan) — enter IDs manually instead.")
+        ids = [x.strip() for x in st.text_input("Campaign IDs", placeholder="284, 283").split(",") if x.strip()]
+
     if not ids:
-        st.info("Enter one or more VWO campaign IDs to see their results.")
+        st.info("Pick one or more tests above to see all their metrics.")
         return
 
-    for cid in ids:
+    cols = st.columns(len(ids)) if len(ids) > 1 else [st]
+    for cid, col in zip(ids, cols):
         data = fetch_vwo_campaign(str(acc), cid, token)
         if not data:
-            st.warning(f"Campaign **{cid}**: couldn't fetch (check the id, token, or plan).")
+            col.warning(f"Campaign **{cid}**: couldn't fetch.")
             continue
-        st.markdown(f"#### {cid} — {data.get('name', '')}  ·  _{data.get('status', '')}_")
-        goals = data.get("goals", [])
-        goal_id = None
-        if goals:
-            prim = next((g["id"] for g in goals if g.get("isPrimary")), goals[0]["id"])
-            opts = [g["id"] for g in goals]
-            names = {g["id"]: g.get("name", f"Goal {g['id']}") for g in goals}
-            goal_id = st.selectbox("Goal", opts, index=opts.index(prim) if prim in opts else 0,
-                                   format_func=lambda i: names.get(i, i), key=f"vwo_goal_{cid}")
-        tbl = vwo_variation_table(data, goal_id)
-        st.dataframe(style_money(tbl), use_container_width=True, hide_index=True)
+        col.markdown(f"#### {cid} — {data.get('name', '')}")
+        col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')}")
+        tbl = vwo_all_goals_table(data)
+        col.dataframe(style_money(tbl), use_container_width=True, hide_index=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
-        st.divider()
 
 
 def main() -> None:

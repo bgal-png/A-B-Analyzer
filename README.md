@@ -46,9 +46,11 @@ export, then copy or download clean figures for your master sheet.
 ### VWO campaigns section
 
 A sidebar **Section** switch toggles between the **Sales analyzer** and a **VWO campaigns**
-view that works without uploading a file: enter one or more campaign/test IDs and it pulls
-each campaign's live per-variation Visitors / Conversions / Conv. rate % (goal selectable).
-Each campaign is a single cached API call.
+view that works without uploading a file. It lists all campaigns (searchable by name/id),
+and selecting one shows **every goal's** per-variation Visitors / Conversions / CR% (+ revenue).
+Selecting **2+** campaigns puts them **side by side to compare** (e.g. a desktop campaign vs a
+mobile/tablet one — VWO's device segments aren't exposed by the API, so comparison is per
+campaign). The campaign list is one cached call; each opened campaign is one more.
 
 ## VWO secrets
 
