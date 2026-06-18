@@ -528,9 +528,14 @@ def render_vwo_page() -> None:
         st.info("Add `vwo_token` (and `vwo_account_id`) to Streamlit secrets to use this section.")
         return
 
-    # Fast path: type IDs directly (no list fetch). Browse loads the full list on demand.
-    ids = [x.strip() for x in
-           st.text_input("Campaign / test IDs", placeholder="e.g. 284, 283, 221").split(",") if x.strip()]
+    # Fast path: type numeric IDs directly (no list fetch). Browse loads the full list on demand.
+    tokens = [x.strip() for x in
+              st.text_input("Campaign / test IDs (numbers only)",
+                            placeholder="e.g. 284, 283, 221").split(",") if x.strip()]
+    ids = [t for t in tokens if t.isdigit()]
+    not_ids = [t for t in tokens if not t.isdigit()]
+    if not_ids:
+        st.caption(f"“{', '.join(not_ids)}” aren't IDs — switch on **Browse** below to search by name.")
     browse = st.toggle("Browse all campaigns (loads the list — may take a few seconds)", value=False)
     if browse:
         with st.spinner("Loading campaign list from VWO…"):
