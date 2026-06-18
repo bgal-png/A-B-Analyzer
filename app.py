@@ -29,11 +29,13 @@ def fetch_vwo_campaign(account_id: str, campaign_id: str, token: str) -> dict | 
         return None
 
 
-def vwo_visitor_map(data: dict) -> dict[str, int]:
-    """{variation_id: visitors} from a campaign's primary goal."""
+def vwo_primary_counts(data: dict) -> dict[str, dict]:
+    """{variation_id: {visitors, conversions}} from a campaign's primary goal."""
     goals = data.get("goals", [])
     primary = next((g for g in goals if g.get("isPrimary")), goals[0] if goals else {})
-    return {str(v): int(d.get("visitorCount", 0)) for v, d in primary.get("aggregatedData", {}).items()}
+    return {str(v): {"visitors": int(d.get("visitorCount", 0)),
+                     "conversions": int(d.get("conversionCount", 0))}
+            for v, d in primary.get("aggregatedData", {}).items()}
 
 
 def vwo_variation_table(data: dict, goal_id: int | None = None) -> pd.DataFrame:
@@ -637,21 +639,32 @@ def main() -> None:
             acc = st.secrets.get("vwo_account_id", "717496")
         except Exception:
             vwo_token, acc = None, "717496"
+        vwo_cols: list[str] = []
         if vwo_token and selected_test:
             data = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
-            visitors = vwo_visitor_map(data) if data else None
-            if visitors:
-                def vis_for(variant):
-                    return sum(visitors.values()) if variant == "TOTAL" else visitors.get(str(variant))
-                vis = pd.to_numeric(vdf["Variant"].map(vis_for), errors="coerce").astype("Int64")
-                vdf.insert(1, "Visitors", vis)
+            counts = vwo_primary_counts(data) if data else None
+            if counts:
+                def col(metric):
+                    def f(variant):
+                        if variant == "TOTAL":
+                            return sum(c[metric] for c in counts.values())
+                        return counts.get(str(variant), {}).get(metric)
+                    return pd.to_numeric(vdf["Variant"].map(f), errors="coerce").astype("Int64")
+                vdf.insert(1, "Visitors", col("visitors"))
+                vdf.insert(2, "VWO conv.", col("conversions"))
                 vdf.insert(3, "Conv. rate %", (vdf["Orders"] / vdf["Visitors"] * 100).round(2))
-                st.caption("Visitors & Conv. rate from VWO (campaign-wide — don't filter by a "
-                           "single project, since VWO visitors aren't split per eshop).")
+                vwo_cols = ["Visitors", "VWO conv.", "Conv. rate %"]
+                st.caption("🔵 tinted columns are from **VWO** (Visitors, VWO conv.); the rest is "
+                           "from the **sales export**. Conv. rate % = Orders ÷ Visitors. VWO counts "
+                           "are campaign-wide — don't filter by a single project when reading them.")
             else:
-                st.caption("⚠️ Couldn't fetch VWO visitors for this campaign (token/plan/campaign id).")
+                st.caption("⚠️ Couldn't fetch VWO data for this campaign (token/plan/campaign id).")
 
-        st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
+        styler = style_money(vdf)
+        if vwo_cols:
+            styler = styler.set_properties(subset=vwo_cols,
+                                           **{"background-color": "rgba(70,130,255,0.13)"})
+        st.dataframe(styler, use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 
         if show_private:
