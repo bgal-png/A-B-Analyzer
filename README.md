@@ -43,6 +43,13 @@ export, then copy or download clean figures for your master sheet.
   Note: VWO visitors are campaign-wide (not split per eshop), so don't filter by a single
   project when reading conversion rate.
 
+### VWO campaigns section
+
+A sidebar **Section** switch toggles between the **Sales analyzer** and a **VWO campaigns**
+view that works without uploading a file: enter one or more campaign/test IDs and it pulls
+each campaign's live per-variation Visitors / Conversions / Conv. rate % (goal selectable).
+Each campaign is a single cached API call.
+
 ## VWO secrets
 
 Add to **Streamlit Cloud → Settings → Secrets** (and a local `.streamlit/secrets.toml`,

@@ -18,20 +18,40 @@ import streamlit.components.v1 as components
 VWO_CAMPAIGN_URL = "https://app.vwo.com/api/v2/accounts/{acc}/campaigns/{cid}"
 
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=16)
-def fetch_vwo_visitors(account_id: str, campaign_id: str, token: str) -> dict[str, int] | None:
-    """Per-variation visitor counts for a VWO campaign: {variation_id: visitors}, or None."""
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=32)
+def fetch_vwo_campaign(account_id: str, campaign_id: str, token: str) -> dict | None:
+    """Fetch a VWO campaign report (the `_data` object), cached 1h. None on failure."""
     try:
         url = VWO_CAMPAIGN_URL.format(acc=account_id, cid=campaign_id)
         req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
-        data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))["_data"]
-        goals = data.get("goals", [])
-        primary = next((g for g in goals if g.get("isPrimary")), goals[0] if goals else None)
-        agg = (primary or {}).get("aggregatedData", {})
-        visitors = {str(v): int(d.get("visitorCount", 0)) for v, d in agg.items()}
-        return visitors or None
+        return json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))["_data"]
     except Exception:
         return None
+
+
+def vwo_visitor_map(data: dict) -> dict[str, int]:
+    """{variation_id: visitors} from a campaign's primary goal."""
+    goals = data.get("goals", [])
+    primary = next((g for g in goals if g.get("isPrimary")), goals[0] if goals else {})
+    return {str(v): int(d.get("visitorCount", 0)) for v, d in primary.get("aggregatedData", {}).items()}
+
+
+def vwo_variation_table(data: dict, goal_id: int | None = None) -> pd.DataFrame:
+    """Per-variation Visitors / Conversions / Conv. rate % for the chosen (or primary) goal."""
+    goals = data.get("goals", [])
+    goal = next((g for g in goals if g.get("id") == goal_id), None) if goal_id else None
+    goal = goal or next((g for g in goals if g.get("isPrimary")), goals[0] if goals else {})
+    agg = goal.get("aggregatedData", {})
+    names = {str(v["id"]): v.get("name", "") for v in data.get("variations", [])}
+    ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
+    rows = []
+    for vid in sorted(agg, key=lambda x: (len(x), x)):
+        vis = int(agg[vid].get("visitorCount", 0))
+        conv = int(agg[vid].get("conversionCount", 0))
+        label = f"{vid} · {names.get(vid, '')}" + (" (control)" if vid in ctrl else "")
+        rows.append({"Variation": label, "Visitors": vis, "Conversions": conv,
+                     "Conv. rate %": round(conv / vis * 100, 2) if vis else None})
+    return pd.DataFrame(rows)
 
 # Columns we rely on. Missing ones degrade gracefully.
 COL_ORDER = "orderId"
@@ -383,6 +403,47 @@ def render_copy_list(items: list[str]) -> None:
     components.html(html, height=len(items) * 24 + 8)
 
 
+def render_vwo_page() -> None:
+    """Standalone view: pull live VWO campaign results (visitors/conversions) by id."""
+    try:
+        token = st.secrets.get("vwo_token")
+        acc = st.secrets.get("vwo_account_id", "717496")
+    except Exception:
+        token, acc = None, "717496"
+
+    st.subheader("VWO campaign results")
+    if not token:
+        st.info("Add `vwo_token` (and `vwo_account_id`) to Streamlit secrets to use this section.")
+        return
+    st.caption("Live from VWO — visitors & conversions per variation. Each campaign is one "
+               "cached API call. Counts are campaign-wide (across all eshops in the test).")
+
+    ids_raw = st.text_input("Campaign / test IDs", placeholder="e.g. 284, 283, 221")
+    ids = [x.strip() for x in ids_raw.split(",") if x.strip()]
+    if not ids:
+        st.info("Enter one or more VWO campaign IDs to see their results.")
+        return
+
+    for cid in ids:
+        data = fetch_vwo_campaign(str(acc), cid, token)
+        if not data:
+            st.warning(f"Campaign **{cid}**: couldn't fetch (check the id, token, or plan).")
+            continue
+        st.markdown(f"#### {cid} — {data.get('name', '')}  ·  _{data.get('status', '')}_")
+        goals = data.get("goals", [])
+        goal_id = None
+        if goals:
+            prim = next((g["id"] for g in goals if g.get("isPrimary")), goals[0]["id"])
+            opts = [g["id"] for g in goals]
+            names = {g["id"]: g.get("name", f"Goal {g['id']}") for g in goals}
+            goal_id = st.selectbox("Goal", opts, index=opts.index(prim) if prim in opts else 0,
+                                   format_func=lambda i: names.get(i, i), key=f"vwo_goal_{cid}")
+        tbl = vwo_variation_table(data, goal_id)
+        st.dataframe(style_money(tbl), use_container_width=True, hide_index=True)
+        download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
+        st.divider()
+
+
 def main() -> None:
     st.set_page_config(page_title="A/B Sales Analyzer", layout="wide")
     head_l, head_r = st.columns([4, 1], vertical_alignment="center")
@@ -392,6 +453,12 @@ def main() -> None:
             st.markdown("**Tick these columns** — click 📋 to copy")
             render_copy_list(COLUMNS_TO_TICK)
             st.markdown(RECOMMENDED_SETTINGS)
+
+    section = st.sidebar.radio("Section", ["📊 Sales analyzer", "🧪 VWO campaigns"])
+    st.sidebar.divider()
+    if section.endswith("VWO campaigns"):
+        render_vwo_page()
+        return
 
     uploaded = st.file_uploader("Upload sales export (CSV or Excel)", type=["csv", "xlsx", "xls"])
     if uploaded is None:
@@ -571,7 +638,8 @@ def main() -> None:
         except Exception:
             vwo_token, acc = None, "717496"
         if vwo_token and selected_test:
-            visitors = fetch_vwo_visitors(str(acc), str(selected_test), vwo_token)
+            data = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
+            visitors = vwo_visitor_map(data) if data else None
             if visitors:
                 def vis_for(variant):
                     return sum(visitors.values()) if variant == "TOTAL" else visitors.get(str(variant))
