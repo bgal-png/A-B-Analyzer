@@ -129,19 +129,38 @@ table.vwo th:first-child, table.vwo td:first-child {text-align:left; width:160px
 """
 
 
-def vwo_format(tbl: pd.DataFrame) -> pd.DataFrame:
-    """Format an all-goals table's values to strings (kept horizontal), for HTML rendering."""
-    d = tbl.copy()
-    for c in d.columns:
-        if c == "Variation":
-            continue
+def vwo_styled_html(tbl: pd.DataFrame) -> str:
+    """Formatted HTML table; per column the best value is green, second-best yellow."""
+    num_cols = [c for c in tbl.columns if c != "Variation"]
+
+    def fmt_for(c):
         if c.endswith("%"):
-            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:+.2f}%")
-        elif c.endswith("rev"):
-            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč")
-        else:
-            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{int(v):,}")
-    return d
+            return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+        if c.endswith("rev"):
+            return lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč"
+        return lambda v: "" if pd.isna(v) else f"{int(v):,}"
+
+    def highlight(col):
+        s = pd.to_numeric(col, errors="coerce")
+        uniq = sorted(s.dropna().unique(), reverse=True)  # higher = better
+        best = uniq[0] if uniq else None
+        second = uniq[1] if len(uniq) > 1 else None
+        out = []
+        for v in s:
+            if best is not None and v == best:
+                out.append("background-color: rgba(76,175,80,0.30)")
+            elif second is not None and v == second:
+                out.append("background-color: rgba(240,200,70,0.28)")
+            else:
+                out.append("")
+        return out
+
+    sty = (tbl.style
+           .format({c: fmt_for(c) for c in num_cols})
+           .apply(highlight, subset=num_cols)
+           .hide(axis="index")
+           .set_table_attributes('class="vwo"'))
+    return sty.to_html()
 
 
 def vwo_all_goals_table(data: dict) -> pd.DataFrame:
@@ -583,8 +602,7 @@ def render_vwo_page() -> None:
         col.markdown(f"#### {cid} — {data.get('name', '')}")
         col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')}")
         tbl = vwo_all_goals_table(data)
-        html = vwo_format(tbl).to_html(index=False, classes="vwo", border=0, escape=True)
-        col.markdown(VWO_TABLE_CSS + html, unsafe_allow_html=True)
+        col.markdown(VWO_TABLE_CSS + vwo_styled_html(tbl), unsafe_allow_html=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
 
 
