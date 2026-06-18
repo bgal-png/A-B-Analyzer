@@ -114,17 +114,20 @@ def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
 
 VWO_TABLE_CSS = """
 <style>
+.vwo-wrap {border:1px solid rgba(250,250,250,.15); border-radius:8px; overflow:hidden;
+  margin:2px 0 10px;}
 table.vwo {border-collapse:collapse; width:100%; table-layout:fixed;
-  font-family:"Source Sans Pro",sans-serif; font-size:13px;
-  color:var(--text-color,#fafafa); border:1px solid rgba(250,250,250,.12); border-radius:6px;}
-table.vwo thead th {background:var(--secondary-background-color,#1e2129);
-  font-weight:600; text-align:right; padding:6px 10px; vertical-align:bottom;
+  font-family:"Source Sans Pro","Segoe UI",sans-serif; font-size:13px; line-height:1.3;
+  color:var(--text-color,#fafafa);}
+table.vwo thead th {background:var(--secondary-background-color,#1c1f26);
+  font-weight:600; text-align:right; padding:8px 10px; vertical-align:bottom;
   border-bottom:1px solid rgba(250,250,250,.18);
   white-space:normal; word-break:break-word; overflow-wrap:anywhere;}
-table.vwo tbody td {padding:6px 10px; text-align:right;
-  border-top:1px solid rgba(250,250,250,.08);}
-table.vwo tbody tr:hover {background:rgba(250,250,250,.04);}
-table.vwo th:first-child, table.vwo td:first-child {text-align:left; width:160px;}
+table.vwo tbody td {padding:7px 10px; text-align:right;
+  border-top:1px solid rgba(250,250,250,.07);}
+table.vwo tbody tr:first-child td {border-top:none;}
+table.vwo tbody tr:hover {background:rgba(250,250,250,.03);}
+table.vwo th:first-child, table.vwo td:first-child {text-align:left; width:170px;}
 </style>
 """
 
@@ -602,7 +605,8 @@ def render_vwo_page() -> None:
         col.markdown(f"#### {cid} — {data.get('name', '')}")
         col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')}")
         tbl = vwo_all_goals_table(data)
-        col.markdown(VWO_TABLE_CSS + vwo_styled_html(tbl), unsafe_allow_html=True)
+        col.markdown(VWO_TABLE_CSS + f'<div class="vwo-wrap">{vwo_styled_html(tbl)}</div>',
+                     unsafe_allow_html=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
 
 
