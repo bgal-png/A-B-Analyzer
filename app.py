@@ -135,8 +135,8 @@ def vwo_format(tbl: pd.DataFrame) -> pd.DataFrame:
     for c in d.columns:
         if c == "Variation":
             continue
-        if c.endswith("CR%"):
-            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:.2f}%")
+        if c.endswith("%"):
+            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:+.2f}%")
         elif c.endswith("rev"):
             d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč")
         else:
@@ -151,6 +151,9 @@ def vwo_all_goals_table(data: dict) -> pd.DataFrame:
     ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
     primary = next((g for g in goals if g.get("isPrimary")), goals[0] if goals else {})
     vids = sorted(primary.get("aggregatedData", {}), key=lambda x: (len(x), x))
+    # VWO's expected/relative improvement vs control, keyed by (goal id, variation id).
+    vgd = {(str(i.get("goal")), str(i.get("variation"))): i.get("aggregated", {})
+           for i in data.get("variationGoalData", [])}
     rows = []
     for vid in vids:
         vis = int(primary.get("aggregatedData", {}).get(vid, {}).get("visitorCount", 0))
@@ -162,6 +165,10 @@ def vwo_all_goals_table(data: dict) -> pd.DataFrame:
             row[f"{gname} · conv"] = int(ad.get("conversionCount", 0))
             if "totalRevenue" in ad:
                 row[f"{gname} · rev"] = round(float(ad.get("totalRevenue", 0)), 2)
+            agg2 = vgd.get((str(g.get("id")), vid), {})
+            imp = agg2.get("relativeImprovementRate") or agg2.get("relativeExpectedImprovementRate")
+            med = imp.get("median") if isinstance(imp, dict) else None
+            row[f"{gname} · exp.impr%"] = round(med * 100, 2) if med is not None else None
         rows.append(row)
     return pd.DataFrame(rows)
 
