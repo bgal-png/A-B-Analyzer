@@ -140,10 +140,7 @@ def vwo_all_goals_table(data: dict) -> pd.DataFrame:
         for g in goals:
             gname = g.get("name", f"Goal {g.get('id')}")
             ad = g.get("aggregatedData", {}).get(vid, {})
-            gvis = int(ad.get("visitorCount", 0)) or vis
-            conv = int(ad.get("conversionCount", 0))
-            row[f"{gname} · conv"] = conv
-            row[f"{gname} · CR%"] = round(conv / gvis * 100, 2) if gvis else None
+            row[f"{gname} · conv"] = int(ad.get("conversionCount", 0))
             if "totalRevenue" in ad:
                 row[f"{gname} · rev"] = round(float(ad.get("totalRevenue", 0)), 2)
         rows.append(row)
