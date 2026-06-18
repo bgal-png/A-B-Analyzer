@@ -528,15 +528,9 @@ def render_vwo_page() -> None:
         st.info("Add `vwo_token` (and `vwo_account_id`) to Streamlit secrets to use this section.")
         return
 
-    # Fast path: type numeric IDs directly (no list fetch). Browse loads the full list on demand.
-    tokens = [x.strip() for x in
-              st.text_input("Campaign / test IDs (numbers only)",
-                            placeholder="e.g. 284, 283, 221").split(",") if x.strip()]
-    ids = [t for t in tokens if t.isdigit()]
-    not_ids = [t for t in tokens if not t.isdigit()]
-    if not_ids:
-        st.caption(f"“{', '.join(not_ids)}” aren't IDs — switch on **Browse** below to search by name.")
-    browse = st.toggle("Browse all campaigns (loads the list — may take a few seconds)", value=False)
+    # Either browse the list by name, OR type IDs directly — one or the other.
+    browse = st.toggle("Browse by name (otherwise enter IDs below)", value=False)
+    ids: list[str] = []
     if browse:
         with st.spinner("Loading campaign list from VWO…"):
             campaigns = fetch_vwo_campaign_list(str(acc), token)
@@ -553,14 +547,22 @@ def render_vwo_page() -> None:
                      or query in c["name"].lower() or query in c["id"].lower()]
             by_label = {label(c): c["id"] for c in shown}
             chosen = st.multiselect("Select tests (pick 2+ to compare)", list(by_label))
-            ids = list(dict.fromkeys(ids + [by_label[c] for c in chosen]))
+            ids = [by_label[c] for c in chosen]
             st.caption(f"{len(shown)} of {len(campaigns)} campaigns shown · sorted Paused → Running → "
                        "Stopped → Archived. Compare device-specific campaigns side by side.")
         else:
-            st.caption("Couldn't load the campaign list (token/plan) — use the IDs box above.")
+            st.caption("Couldn't load the campaign list (token/plan) — turn this off and enter IDs.")
+    else:
+        tokens = [x.strip() for x in
+                  st.text_input("Campaign / test IDs (numbers only)",
+                                placeholder="e.g. 284, 283, 221").split(",") if x.strip()]
+        ids = [t for t in tokens if t.isdigit()]
+        not_ids = [t for t in tokens if not t.isdigit()]
+        if not_ids:
+            st.caption(f"“{', '.join(not_ids)}” aren't IDs — switch on **Browse by name** to search.")
 
     if not ids:
-        st.info("Enter test IDs above (or switch on **Browse** to pick from the list).")
+        st.info("Enter test IDs, or switch on **Browse by name** to pick from the list.")
         return
 
     cols = st.columns(len(ids)) if len(ids) > 1 else [st]
