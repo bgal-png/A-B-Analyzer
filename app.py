@@ -165,10 +165,11 @@ def vwo_all_goals_table(data: dict) -> pd.DataFrame:
             row[f"{gname} · conv"] = int(ad.get("conversionCount", 0))
             if "totalRevenue" in ad:
                 row[f"{gname} · rev"] = round(float(ad.get("totalRevenue", 0)), 2)
-            agg2 = vgd.get((str(g.get("id")), vid), {})
-            imp = agg2.get("relativeImprovementRate") or agg2.get("relativeExpectedImprovementRate")
-            med = imp.get("median") if isinstance(imp, dict) else None
-            row[f"{gname} · exp.impr%"] = round(med * 100, 2) if med is not None else None
+            if g is primary:  # expected improvement only for the conversion goal
+                agg2 = vgd.get((str(g.get("id")), vid), {})
+                imp = agg2.get("relativeImprovementRate") or agg2.get("relativeExpectedImprovementRate")
+                med = imp.get("median") if isinstance(imp, dict) else None
+                row[f"{gname} · exp.impr%"] = round(med * 100, 2) if med is not None else None
         rows.append(row)
     return pd.DataFrame(rows)
 
