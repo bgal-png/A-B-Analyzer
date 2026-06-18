@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -19,6 +20,28 @@ import streamlit.components.v1 as components
 VWO_CAMPAIGN_URL = "https://app.vwo.com/api/v2/accounts/{acc}/campaigns/{cid}"
 
 
+def _vwo_get(url: str, token: str, timeout: int = 30, retries: int = 3) -> dict:
+    """GET + JSON with retry/backoff on timeouts, 429s and 5xx (eases VWO API load)."""
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
+            return json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            raise
+    raise last_err if last_err else RuntimeError("request failed")
+
+
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=32)
 def fetch_vwo_campaign(account_id: str, campaign_id: str, token: str) -> dict | None:
     """Fetch a VWO campaign report (the `_data` object), cached 1h.
@@ -27,9 +50,7 @@ def fetch_vwo_campaign(account_id: str, campaign_id: str, token: str) -> dict | 
     """
     try:
         url = VWO_CAMPAIGN_URL.format(acc=account_id, cid=campaign_id)
-        req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
-        payload = json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))
-        data = payload.get("_data")
+        data = _vwo_get(url, token, timeout=45).get("_data")
         return data if data else {"_error": "no report data in response"}
     except urllib.error.HTTPError as e:
         return {"_error": f"HTTP {e.code} {e.reason}"}
@@ -66,13 +87,11 @@ def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
     """All campaigns [{id,name,type,status}], paging through the API until exhausted."""
     try:
         out: dict[str, dict] = {}
-        offset, page_size = 0, 100
-        for _ in range(60):  # safety cap (60 pages)
+        offset, page_size = 0, 1000
+        for _ in range(40):  # safety cap
             url = (f"https://app.vwo.com/api/v2/accounts/{account_id}/campaigns"
-                   f"?limit={page_size}&offset={offset}")
-            req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
-            page = _extract_campaign_list(
-                json.loads(urllib.request.urlopen(req, timeout=25).read().decode("utf-8")))
+                   f"?limit={page_size}&offset={offset}&showDetailedInfo=false")
+            page = _extract_campaign_list(_vwo_get(url, token, timeout=30))
             if not page:
                 break
             added = 0
