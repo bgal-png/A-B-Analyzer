@@ -128,6 +128,14 @@ def _vwo_per_day(data: dict) -> dict[int, int]:
     return per_day
 
 
+def fmt_date(ts) -> str:
+    """Unix ts → 'D.M.YYYY' (no leading zeros), cross-platform."""
+    if not ts:
+        return "?"
+    t = time.gmtime(ts)
+    return f"{t.tm_mday}.{t.tm_mon}.{t.tm_year}"
+
+
 def vwo_active_days(data: dict) -> set:
     """Set of 'YYYY-MM-DD' day strings the test actually collected traffic."""
     return {time.strftime("%Y-%m-%d", time.gmtime(ts))
@@ -618,11 +626,10 @@ def render_vwo_page() -> None:
             continue
         col.markdown(f"#### {cid} — {data.get('name', '')}")
         dr = data.get("dataIntervalRange", {})
-        fdate = lambda ts: time.strftime("%Y-%m-%d", time.gmtime(ts)) if ts else "?"
-        start = fdate(dr.get("limitingStartTime") or dr.get("startTime"))
+        start = fmt_date(dr.get("limitingStartTime") or dr.get("startTime"))
         running = str(data.get("status", "")).upper() == "RUNNING"
-        end = (f"{fdate(time.time())} (running)" if running
-               else fdate(dr.get("limitingEndTime") or dr.get("endTime")))
+        end = (f"{fmt_date(time.time())} (running)" if running
+               else fmt_date(dr.get("limitingEndTime") or dr.get("endTime")))
         col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')} · "
                     f"📅 {start} → {end}")
         tbl = vwo_all_goals_table(data)
@@ -635,7 +642,7 @@ def render_vwo_page() -> None:
             with col.expander(f"Running periods · {len(periods)} span(s), {total} active days"):
                 st.caption("Reconstructed from daily traffic — gaps = paused / out of quota.")
                 st.markdown("\n".join(
-                    f"- {fdate(p['start'])} → {fdate(p['end'])}  ·  {p['days']} d" for p in periods))
+                    f"- {fmt_date(p['start'])} → {fmt_date(p['end'])}  ·  {p['days']} d" for p in periods))
 
 
 def main() -> None:
