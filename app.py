@@ -9,6 +9,7 @@ import io
 import json
 import re
 import unicodedata
+import urllib.error
 import urllib.request
 
 import pandas as pd
@@ -20,13 +21,20 @@ VWO_CAMPAIGN_URL = "https://app.vwo.com/api/v2/accounts/{acc}/campaigns/{cid}"
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=32)
 def fetch_vwo_campaign(account_id: str, campaign_id: str, token: str) -> dict | None:
-    """Fetch a VWO campaign report (the `_data` object), cached 1h. None on failure."""
+    """Fetch a VWO campaign report (the `_data` object), cached 1h.
+
+    On failure returns {"_error": "..."} so the UI can show why.
+    """
     try:
         url = VWO_CAMPAIGN_URL.format(acc=account_id, cid=campaign_id)
         req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
-        return json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))["_data"]
-    except Exception:
-        return None
+        payload = json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))
+        data = payload.get("_data")
+        return data if data else {"_error": "no report data in response"}
+    except urllib.error.HTTPError as e:
+        return {"_error": f"HTTP {e.code} {e.reason}"}
+    except Exception as e:  # noqa: BLE001
+        return {"_error": f"{type(e).__name__}: {e}"}
 
 
 def vwo_primary_counts(data: dict) -> dict[str, dict]:
@@ -535,8 +543,8 @@ def render_vwo_page() -> None:
     cols = st.columns(len(ids)) if len(ids) > 1 else [st]
     for cid, col in zip(ids, cols):
         data = fetch_vwo_campaign(str(acc), cid, token)
-        if not data:
-            col.warning(f"Campaign **{cid}**: couldn't fetch.")
+        if not data or data.get("_error"):
+            col.warning(f"Campaign **{cid}**: {data.get('_error', 'no data') if data else 'no data'}")
             continue
         col.markdown(f"#### {cid} — {data.get('name', '')}")
         col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')}")
@@ -742,7 +750,7 @@ def main() -> None:
         vwo_cols: list[str] = []
         if vwo_token and selected_test:
             data = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
-            counts = vwo_primary_counts(data) if data else None
+            counts = vwo_primary_counts(data) if data and not data.get("_error") else None
             if counts:
                 def col(metric):
                     def f(variant):
