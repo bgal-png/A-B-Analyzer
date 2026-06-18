@@ -112,12 +112,8 @@ def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
         return None
 
 
-def vwo_running_periods(data: dict) -> list[dict]:
-    """Reconstruct active (running) date spans from per-day visitor counts.
-
-    Days with no traffic (paused / out of quota) split the spans. Returns
-    [{start, end, days}] using day-start unix timestamps.
-    """
+def _vwo_per_day(data: dict) -> dict[int, int]:
+    """{day-start unix ts: total visitors} from the campaign's primary goal."""
     goals = data.get("goals", [])
     pid = next((g.get("id") for g in goals if g.get("isPrimary")),
                goals[0].get("id") if goals else None)
@@ -129,7 +125,22 @@ def vwo_running_periods(data: dict) -> list[dict]:
             ts = iw.get("interval")
             if ts is not None:
                 per_day[ts] = per_day.get(ts, 0) + int(iw.get("visitorCount", 0))
-    active = sorted(t for t, v in per_day.items() if v > 0)
+    return per_day
+
+
+def vwo_active_days(data: dict) -> set:
+    """Set of 'YYYY-MM-DD' day strings the test actually collected traffic."""
+    return {time.strftime("%Y-%m-%d", time.gmtime(ts))
+            for ts, v in _vwo_per_day(data).items() if v > 0}
+
+
+def vwo_running_periods(data: dict) -> list[dict]:
+    """Reconstruct active (running) date spans from per-day visitor counts.
+
+    Days with no traffic (paused / out of quota) split the spans. Returns
+    [{start, end, days}] using day-start unix timestamps.
+    """
+    active = sorted(t for t, v in _vwo_per_day(data).items() if v > 0)
     periods: list[dict] = []
     for ts in active:
         if periods and ts - periods[-1]["end"] <= 86400 * 1.5:  # contiguous day → same span
@@ -703,6 +714,26 @@ def main() -> None:
         start, end = sb.date_input("Date window", value=(dmin, dmax), min_value=dmin, max_value=dmax)
         mask = (work["_order_dt"].dt.date >= start) & (work["_order_dt"].dt.date <= end)
         work = work[mask]
+
+    # Restrict to the days the VWO test actually ran (excludes paused / out-of-quota gaps).
+    try:
+        vwo_token, vwo_acc = st.secrets.get("vwo_token"), st.secrets.get("vwo_account_id", "717496")
+    except Exception:
+        vwo_token, vwo_acc = None, "717496"
+    if vwo_token and selected_test and "_order_dt" in work.columns:
+        if sb.checkbox("Only dates the test was running (VWO)", value=False,
+                       help="Keep only orders from days the VWO test collected traffic — "
+                            "skips paused / out-of-quota gaps."):
+            cdata = fetch_vwo_campaign(str(vwo_acc), str(selected_test), vwo_token)
+            if cdata and not cdata.get("_error"):
+                active = vwo_active_days(cdata)
+                if active:
+                    work = work[work["_order_dt"].dt.strftime("%Y-%m-%d").isin(active)]
+                    sb.caption(f"Test ran on {len(active)} day(s).")
+                else:
+                    sb.warning("VWO returned no traffic days for this test.")
+            else:
+                sb.warning("Couldn't fetch VWO running dates.")
 
     # Order state. Cancelled exclusion is applied last so the Per-variant tab can
     # still see cancelled rows to compute the Storno count.
