@@ -162,9 +162,10 @@ def vwo_all_goals_table(data: dict) -> pd.DataFrame:
         for g in goals:
             gname = g.get("name", f"Goal {g.get('id')}")
             ad = g.get("aggregatedData", {}).get(vid, {})
-            row[f"{gname} · conv"] = int(ad.get("conversionCount", 0))
-            if "totalRevenue" in ad:
-                row[f"{gname} · rev"] = round(float(ad.get("totalRevenue", 0)), 2)
+            if g.get("type") == "revenue" or "totalRevenue" in ad:
+                row[f"{gname} · rev"] = round(float(ad.get("totalRevenue", 0)), 2)  # conv = same as Conversion
+            else:
+                row[f"{gname} · conv"] = int(ad.get("conversionCount", 0))
             if g is primary:  # expected improvement only for the conversion goal
                 agg2 = vgd.get((str(g.get("id")), vid), {})
                 imp = agg2.get("relativeImprovementRate") or agg2.get("relativeExpectedImprovementRate")
