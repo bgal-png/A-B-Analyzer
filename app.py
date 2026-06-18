@@ -514,11 +514,16 @@ def render_vwo_page() -> None:
             return f"{c['id']} — {c['name']}{s}"
         ordered = sorted(campaigns, key=lambda c: (status_rank.get(str(c["status"]).upper(), 1.5),
                                                    c["name"].lower()))
-        by_label = {label(c): c["id"] for c in ordered}
-        chosen = st.multiselect("Tests — search by name or id (pick 2+ to compare)", list(by_label))
+        # Own search box so results stay status-sorted (the multiselect's own search reranks).
+        query = st.text_input("Search tests (name or id)", placeholder="e.g. invasive").lower().strip()
+        shown = [c for c in ordered if not query
+                 or query in c["name"].lower() or query in c["id"].lower()]
+        by_label = {label(c): c["id"] for c in shown}
+        chosen = st.multiselect("Select tests to view / compare (pick 2+ to compare)", list(by_label))
         ids = [by_label[c] for c in chosen]
-        st.caption(f"{len(campaigns)} campaigns available. VWO device segments aren't exposed by "
-                   "the API — compare your device-specific campaigns (e.g. desktop vs mobile) side by side.")
+        st.caption(f"{len(shown)} of {len(campaigns)} campaigns shown · sorted Paused → Running → "
+                   "Stopped → Archived. VWO device segments aren't exposed by the API — compare "
+                   "device-specific campaigns (e.g. desktop vs mobile) side by side.")
     else:
         st.caption("Couldn't load the campaign list (token/plan) — enter IDs manually instead.")
         ids = [x.strip() for x in st.text_input("Campaign IDs", placeholder="284, 283").split(",") if x.strip()]
