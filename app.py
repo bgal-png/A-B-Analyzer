@@ -528,32 +528,34 @@ def render_vwo_page() -> None:
         st.info("Add `vwo_token` (and `vwo_account_id`) to Streamlit secrets to use this section.")
         return
 
-    campaigns = fetch_vwo_campaign_list(str(acc), token)
-    if campaigns:
-        # Searchable picker; select 2+ to compare (e.g. a desktop vs a mobile/tablet campaign).
-        status_rank = {"PAUSED": 0, "RUNNING": 1, "STOPPED": 2, "FINISHED": 2, "ENDED": 2,
-                       "ARCHIVED": 3}
-        def label(c):
-            s = f"  · {c['status']}" if c["status"] else ""
-            return f"{c['id']} — {c['name']}{s}"
-        ordered = sorted(campaigns, key=lambda c: (status_rank.get(str(c["status"]).upper(), 1.5),
-                                                   c["name"].lower()))
-        # Own search box so results stay status-sorted (the multiselect's own search reranks).
-        query = st.text_input("Search tests (name or id)", placeholder="e.g. invasive").lower().strip()
-        shown = [c for c in ordered if not query
-                 or query in c["name"].lower() or query in c["id"].lower()]
-        by_label = {label(c): c["id"] for c in shown}
-        chosen = st.multiselect("Select tests to view / compare (pick 2+ to compare)", list(by_label))
-        ids = [by_label[c] for c in chosen]
-        st.caption(f"{len(shown)} of {len(campaigns)} campaigns shown · sorted Paused → Running → "
-                   "Stopped → Archived. VWO device segments aren't exposed by the API — compare "
-                   "device-specific campaigns (e.g. desktop vs mobile) side by side.")
-    else:
-        st.caption("Couldn't load the campaign list (token/plan) — enter IDs manually instead.")
-        ids = [x.strip() for x in st.text_input("Campaign IDs", placeholder="284, 283").split(",") if x.strip()]
+    # Fast path: type IDs directly (no list fetch). Browse loads the full list on demand.
+    ids = [x.strip() for x in
+           st.text_input("Campaign / test IDs", placeholder="e.g. 284, 283, 221").split(",") if x.strip()]
+    browse = st.toggle("Browse all campaigns (loads the list — may take a few seconds)", value=False)
+    if browse:
+        with st.spinner("Loading campaign list from VWO…"):
+            campaigns = fetch_vwo_campaign_list(str(acc), token)
+        if campaigns:
+            status_rank = {"PAUSED": 0, "RUNNING": 1, "STOPPED": 2, "FINISHED": 2, "ENDED": 2,
+                           "ARCHIVED": 3}
+            def label(c):
+                s = f"  · {c['status']}" if c["status"] else ""
+                return f"{c['id']} — {c['name']}{s}"
+            ordered = sorted(campaigns, key=lambda c: (status_rank.get(str(c["status"]).upper(), 1.5),
+                                                       c["name"].lower()))
+            query = st.text_input("Search tests (name or id)", placeholder="e.g. invasive").lower().strip()
+            shown = [c for c in ordered if not query
+                     or query in c["name"].lower() or query in c["id"].lower()]
+            by_label = {label(c): c["id"] for c in shown}
+            chosen = st.multiselect("Select tests (pick 2+ to compare)", list(by_label))
+            ids = list(dict.fromkeys(ids + [by_label[c] for c in chosen]))
+            st.caption(f"{len(shown)} of {len(campaigns)} campaigns shown · sorted Paused → Running → "
+                       "Stopped → Archived. Compare device-specific campaigns side by side.")
+        else:
+            st.caption("Couldn't load the campaign list (token/plan) — use the IDs box above.")
 
     if not ids:
-        st.info("Pick one or more tests above to see all their metrics.")
+        st.info("Enter test IDs above (or switch on **Browse** to pick from the list).")
         return
 
     cols = st.columns(len(ids)) if len(ids) > 1 else [st]
