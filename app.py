@@ -38,29 +38,49 @@ def vwo_primary_counts(data: dict) -> dict[str, dict]:
             for v, d in primary.get("aggregatedData", {}).items()}
 
 
+def _extract_campaign_list(payload) -> list:
+    """Find the first list of campaign-like dicts anywhere in the response."""
+    from collections import deque
+    q = deque([payload])
+    while q:
+        x = q.popleft()
+        if isinstance(x, list) and x and isinstance(x[0], dict) and "id" in x[0] and "name" in x[0]:
+            return x
+        if isinstance(x, dict):
+            q.extend(x.values())
+        elif isinstance(x, list):
+            q.extend(x)
+    return []
+
+
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=4)
 def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
-    """List campaigns: [{id, name, type, status}], or None. Defensive about the wrapper shape."""
+    """All campaigns [{id,name,type,status}], paging through the API until exhausted."""
     try:
-        url = f"https://app.vwo.com/api/v2/accounts/{account_id}/campaigns?limit=1000"
-        req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
-        payload = json.loads(urllib.request.urlopen(req, timeout=25).read().decode("utf-8"))
-        from collections import deque
-        q, found = deque([payload]), None  # find the first list of campaign-like dicts
-        while q:
-            x = q.popleft()
-            if isinstance(x, list) and x and isinstance(x[0], dict) and "id" in x[0] and "name" in x[0]:
-                found = x
+        out: dict[str, dict] = {}
+        offset, page_size = 0, 100
+        for _ in range(60):  # safety cap (60 pages)
+            url = (f"https://app.vwo.com/api/v2/accounts/{account_id}/campaigns"
+                   f"?limit={page_size}&offset={offset}")
+            req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
+            page = _extract_campaign_list(
+                json.loads(urllib.request.urlopen(req, timeout=25).read().decode("utf-8")))
+            if not page:
                 break
-            if isinstance(x, dict):
-                q.extend(x.values())
-            elif isinstance(x, list):
-                q.extend(x)
-        if not found:
-            return None
-        return [{"id": str(c.get("id")), "name": c.get("name", ""),
-                 "type": c.get("type", ""), "status": c.get("status", "")}
-                for c in found if c.get("id") is not None]
+            added = 0
+            for c in page:
+                cid = c.get("id")
+                if cid is None:
+                    continue
+                k = str(cid)
+                if k not in out:
+                    out[k] = {"id": k, "name": c.get("name", ""),
+                              "type": c.get("type", ""), "status": c.get("status", "")}
+                    added += 1
+            offset += len(page)
+            if added == 0:  # no new campaigns -> done (handles capped limits too)
+                break
+        return list(out.values()) or None
     except Exception:
         return None
 
