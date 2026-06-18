@@ -507,10 +507,14 @@ def render_vwo_page() -> None:
     campaigns = fetch_vwo_campaign_list(str(acc), token)
     if campaigns:
         # Searchable picker; select 2+ to compare (e.g. a desktop vs a mobile/tablet campaign).
+        status_rank = {"PAUSED": 0, "RUNNING": 1, "STOPPED": 2, "FINISHED": 2, "ENDED": 2,
+                       "ARCHIVED": 3}
         def label(c):
             s = f"  · {c['status']}" if c["status"] else ""
             return f"{c['id']} — {c['name']}{s}"
-        by_label = {label(c): c["id"] for c in sorted(campaigns, key=lambda c: c["name"].lower())}
+        ordered = sorted(campaigns, key=lambda c: (status_rank.get(str(c["status"]).upper(), 1.5),
+                                                   c["name"].lower()))
+        by_label = {label(c): c["id"] for c in ordered}
         chosen = st.multiselect("Tests — search by name or id (pick 2+ to compare)", list(by_label))
         ids = [by_label[c] for c in chosen]
         st.caption(f"{len(campaigns)} campaigns available. VWO device segments aren't exposed by "
