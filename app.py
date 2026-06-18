@@ -65,8 +65,20 @@ def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
         return None
 
 
-def vwo_display(tbl: pd.DataFrame) -> pd.DataFrame:
-    """Format and transpose an all-goals table so it fits the screen (metrics as rows)."""
+VWO_TABLE_CSS = """
+<style>
+table.vwo {border-collapse:collapse; width:100%; table-layout:fixed; font-size:11px;}
+table.vwo th, table.vwo td {border:1px solid rgba(255,255,255,.12); padding:3px 5px;
+  text-align:right; white-space:normal; word-break:break-word; overflow-wrap:anywhere;
+  vertical-align:bottom;}
+table.vwo th {font-weight:600;}
+table.vwo td:first-child, table.vwo th:first-child {text-align:left; width:150px;}
+</style>
+"""
+
+
+def vwo_format(tbl: pd.DataFrame) -> pd.DataFrame:
+    """Format an all-goals table's values to strings (kept horizontal), for HTML rendering."""
     d = tbl.copy()
     for c in d.columns:
         if c == "Variation":
@@ -77,7 +89,7 @@ def vwo_display(tbl: pd.DataFrame) -> pd.DataFrame:
             d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč")
         else:
             d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{int(v):,}")
-    return d.set_index("Variation").T
+    return d
 
 
 def vwo_all_goals_table(data: dict) -> pd.DataFrame:
@@ -495,7 +507,8 @@ def render_vwo_page() -> None:
         col.markdown(f"#### {cid} — {data.get('name', '')}")
         col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')}")
         tbl = vwo_all_goals_table(data)
-        col.dataframe(vwo_display(tbl), use_container_width=True)
+        html = vwo_format(tbl).to_html(index=False, classes="vwo", border=0, escape=True)
+        col.markdown(VWO_TABLE_CSS + html, unsafe_allow_html=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
 
 
