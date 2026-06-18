@@ -67,12 +67,17 @@ def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
 
 VWO_TABLE_CSS = """
 <style>
-table.vwo {border-collapse:collapse; width:100%; table-layout:fixed; font-size:11px;}
-table.vwo th, table.vwo td {border:1px solid rgba(255,255,255,.12); padding:3px 5px;
-  text-align:right; white-space:normal; word-break:break-word; overflow-wrap:anywhere;
-  vertical-align:bottom;}
-table.vwo th {font-weight:600;}
-table.vwo td:first-child, table.vwo th:first-child {text-align:left; width:150px;}
+table.vwo {border-collapse:collapse; width:100%; table-layout:fixed;
+  font-family:"Source Sans Pro",sans-serif; font-size:13px;
+  color:var(--text-color,#fafafa); border:1px solid rgba(250,250,250,.12); border-radius:6px;}
+table.vwo thead th {background:var(--secondary-background-color,#1e2129);
+  font-weight:600; text-align:right; padding:6px 10px; vertical-align:bottom;
+  border-bottom:1px solid rgba(250,250,250,.18);
+  white-space:normal; word-break:break-word; overflow-wrap:anywhere;}
+table.vwo tbody td {padding:6px 10px; text-align:right;
+  border-top:1px solid rgba(250,250,250,.08);}
+table.vwo tbody tr:hover {background:rgba(250,250,250,.04);}
+table.vwo th:first-child, table.vwo td:first-child {text-align:left; width:160px;}
 </style>
 """
 
