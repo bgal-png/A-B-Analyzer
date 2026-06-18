@@ -578,7 +578,14 @@ def render_vwo_page() -> None:
             col.warning(f"Campaign **{cid}**: {data.get('_error', 'no data') if data else 'no data'}")
             continue
         col.markdown(f"#### {cid} — {data.get('name', '')}")
-        col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')}")
+        dr = data.get("dataIntervalRange", {})
+        fdate = lambda ts: time.strftime("%Y-%m-%d", time.gmtime(ts)) if ts else "?"
+        start = fdate(dr.get("limitingStartTime") or dr.get("startTime"))
+        running = str(data.get("status", "")).upper() == "RUNNING"
+        end = (f"{fdate(time.time())} (running)" if running
+               else fdate(dr.get("limitingEndTime") or dr.get("endTime")))
+        col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')} · "
+                    f"📅 {start} → {end}")
         tbl = vwo_all_goals_table(data)
         col.dataframe(vwo_styler(tbl), use_container_width=True, hide_index=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
