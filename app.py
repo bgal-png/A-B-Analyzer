@@ -112,6 +112,34 @@ def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
         return None
 
 
+def vwo_running_periods(data: dict) -> list[dict]:
+    """Reconstruct active (running) date spans from per-day visitor counts.
+
+    Days with no traffic (paused / out of quota) split the spans. Returns
+    [{start, end, days}] using day-start unix timestamps.
+    """
+    goals = data.get("goals", [])
+    pid = next((g.get("id") for g in goals if g.get("isPrimary")),
+               goals[0].get("id") if goals else None)
+    per_day: dict[int, int] = {}
+    for vgd in data.get("variationGoalData", []):
+        if vgd.get("goal") != pid:
+            continue
+        for iw in vgd.get("intervalWise", []):
+            ts = iw.get("interval")
+            if ts is not None:
+                per_day[ts] = per_day.get(ts, 0) + int(iw.get("visitorCount", 0))
+    active = sorted(t for t, v in per_day.items() if v > 0)
+    periods: list[dict] = []
+    for ts in active:
+        if periods and ts - periods[-1]["end"] <= 86400 * 1.5:  # contiguous day → same span
+            periods[-1]["end"] = ts
+            periods[-1]["days"] += 1
+        else:
+            periods.append({"start": ts, "end": ts, "days": 1})
+    return periods
+
+
 def vwo_styler(tbl: pd.DataFrame):
     """Styler for st.dataframe: formatted values, best value green, second-best yellow."""
     num_cols = [c for c in tbl.columns if c != "Variation"]
@@ -589,6 +617,14 @@ def render_vwo_page() -> None:
         tbl = vwo_all_goals_table(data)
         col.dataframe(vwo_styler(tbl), use_container_width=True, hide_index=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
+
+        periods = vwo_running_periods(data)
+        if periods:
+            total = sum(p["days"] for p in periods)
+            with col.expander(f"Running periods · {len(periods)} span(s), {total} active days"):
+                st.caption("Reconstructed from daily traffic — gaps = paused / out of quota.")
+                st.markdown("\n".join(
+                    f"- {fdate(p['start'])} → {fdate(p['end'])}  ·  {p['days']} d" for p in periods))
 
 
 def main() -> None:
