@@ -6,12 +6,32 @@ test (handling pipe-delimited multi-test items), so figures never double-count.
 from __future__ import annotations
 
 import io
+import json
 import re
 import unicodedata
+import urllib.request
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+
+VWO_CAMPAIGN_URL = "https://app.vwo.com/api/v2/accounts/{acc}/campaigns/{cid}"
+
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=16)
+def fetch_vwo_visitors(account_id: str, campaign_id: str, token: str) -> dict[str, int] | None:
+    """Per-variation visitor counts for a VWO campaign: {variation_id: visitors}, or None."""
+    try:
+        url = VWO_CAMPAIGN_URL.format(acc=account_id, cid=campaign_id)
+        req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
+        data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))["_data"]
+        goals = data.get("goals", [])
+        primary = next((g for g in goals if g.get("isPrimary")), goals[0] if goals else None)
+        agg = (primary or {}).get("aggregatedData", {})
+        visitors = {str(v): int(d.get("visitorCount", 0)) for v, d in agg.items()}
+        return visitors or None
+    except Exception:
+        return None
 
 # Columns we rely on. Missing ones degrade gracefully.
 COL_ORDER = "orderId"
@@ -543,6 +563,26 @@ def main() -> None:
         st.caption(f"{cancel_note}. Revenue/Avg. Order Val. use product lines only; "
                    "Margin includes shipping lines (matching the manual sheet).")
         vdf = variant_table(work_all)
+
+        # VWO visitors + conversion rate (orders ÷ visitors), if a token is configured.
+        try:
+            vwo_token = st.secrets.get("vwo_token")
+            acc = st.secrets.get("vwo_account_id", "717496")
+        except Exception:
+            vwo_token, acc = None, "717496"
+        if vwo_token and selected_test:
+            visitors = fetch_vwo_visitors(str(acc), str(selected_test), vwo_token)
+            if visitors:
+                def vis_for(variant):
+                    return sum(visitors.values()) if variant == "TOTAL" else visitors.get(str(variant))
+                vis = pd.to_numeric(vdf["Variant"].map(vis_for), errors="coerce").astype("Int64")
+                vdf.insert(1, "Visitors", vis)
+                vdf.insert(3, "Conv. rate %", (vdf["Orders"] / vdf["Visitors"] * 100).round(2))
+                st.caption("Visitors & Conv. rate from VWO (campaign-wide — don't filter by a "
+                           "single project, since VWO visitors aren't split per eshop).")
+            else:
+                st.caption("⚠️ Couldn't fetch VWO visitors for this campaign (token/plan/campaign id).")
+
         st.dataframe(style_money(vdf), use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 

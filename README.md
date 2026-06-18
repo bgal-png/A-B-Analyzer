@@ -36,6 +36,22 @@ export, then copy or download clean figures for your master sheet.
     private brand** (whole basket, matching the department's "jen privátní čočky").
   - **Custom pivot** — group by any columns × metrics.
 - **Export:** every view has a Download CSV button (semicolon, UTF-8 BOM — Excel-friendly).
+- **VWO visitors / conversion rate (optional):** if a VWO API token is configured in
+  Streamlit secrets (`vwo_token`, plus `vwo_account_id`), the Per-variant table adds
+  **Visitors** and **Conv. rate %** (orders ÷ visitors) for the selected test, pulled
+  from the VWO Campaign API. Campaign id = `ab_test_name`, variation id = `ab_test_variant`.
+  Note: VWO visitors are campaign-wide (not split per eshop), so don't filter by a single
+  project when reading conversion rate.
+
+## VWO secrets
+
+Add to **Streamlit Cloud → Settings → Secrets** (and a local `.streamlit/secrets.toml`,
+which is gitignored):
+
+```toml
+vwo_token = "your-vwo-api-token"   # generate at app.vwo.com/#/developers/tokens (Browse is enough)
+vwo_account_id = "717496"
+```
 
 ## Run locally
 
