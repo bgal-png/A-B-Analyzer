@@ -65,6 +65,21 @@ def fetch_vwo_campaign_list(account_id: str, token: str) -> list[dict] | None:
         return None
 
 
+def vwo_display(tbl: pd.DataFrame) -> pd.DataFrame:
+    """Format and transpose an all-goals table so it fits the screen (metrics as rows)."""
+    d = tbl.copy()
+    for c in d.columns:
+        if c == "Variation":
+            continue
+        if c.endswith("CR%"):
+            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:.2f}%")
+        elif c.endswith("rev"):
+            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč")
+        else:
+            d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{int(v):,}")
+    return d.set_index("Variation").T
+
+
 def vwo_all_goals_table(data: dict) -> pd.DataFrame:
     """Per-variation table with Visitors + every goal's conversions / CR% (+ revenue if present)."""
     goals = data.get("goals", [])
@@ -480,7 +495,7 @@ def render_vwo_page() -> None:
         col.markdown(f"#### {cid} — {data.get('name', '')}")
         col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')}")
         tbl = vwo_all_goals_table(data)
-        col.dataframe(style_money(tbl), use_container_width=True, hide_index=True)
+        col.dataframe(vwo_display(tbl), use_container_width=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
 
 
