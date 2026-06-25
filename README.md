@@ -103,10 +103,10 @@ How it finds where to write:
 - **Send test → its tab** writes the selected campaign; **Fill all tabs from this export**
   loops every tab's B1 id and fills them all. Percentages go in as fractions into
   percent-formatted cells; re-sending overwrites the data cells in place.
-- **VWO-only update (no export needed):** the **VWO campaigns** page has an *Update VWO blocks
-  in Google Sheets* panel that fills just the VWO + Desktop/Mobile blocks (and dates) for
-  every tab from the API — leaving the Alensis block untouched. Use it to refresh VWO numbers
-  before you have the sales export.
+- **VWO-only update (no export needed):** on the **VWO campaigns** page, after selecting one or
+  more campaigns, an *Update VWO blocks in Google Sheets* panel fills just the VWO +
+  Desktop/Mobile blocks (and dates) for **those selected campaigns** — each routed to its tab by
+  the B1 link, Alensis left untouched. Use it to refresh VWO numbers before you have the export.
 
 **Setup:** a Google **service account** with the Sheets API enabled; share the spreadsheet
 with its email (Editor); put the key + spreadsheet id in secrets:
