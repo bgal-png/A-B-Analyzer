@@ -721,7 +721,8 @@ def main() -> None:
         chosen = sb.multiselect("Variant", variants, default=variants)
         work = work[work["_variant"].isin(chosen)]
     else:
-        work["_variant"] = work.get(COL_VARIANT, "").replace("", "(none)")
+        v = work[COL_VARIANT].astype(str) if COL_VARIANT in work.columns else pd.Series("", index=work.index)
+        work["_variant"] = v.where(v != "", "(none)")
 
     # Project / eshop (only when the export spans more than one). Empty = all.
     if "_project" in df.columns and df["_project"].nunique() > 1:
@@ -812,7 +813,7 @@ def main() -> None:
                          help="Searches the Czech commonName. Case-insensitive but "
                               "accent-sensitive: 'čoč' matches ČOČ/Čoč but not 'coc'.")
     if term and "commonName" in df.columns:
-        work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
+        work = work[work["commonName"].astype(str).str.contains(term, case=False, na=False, regex=False)]
 
     # _is_product marks the lines that count as product revenue (not delivery, and an
     # included item type). Per-variant revenue uses it; margin spans every line.
