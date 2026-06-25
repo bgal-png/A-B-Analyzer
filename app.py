@@ -521,10 +521,10 @@ PRIVATE_BRANDS = [
 # Add exact addresses to TEAM_EMAILS, and/or whole domains to TEAM_EMAIL_DOMAINS
 # (e.g. "alensa.eu" excludes every @alensa.eu order). Case-insensitive.
 TEAM_EMAILS: list[str] = [
-    # "bgal@alensa.eu",
+    # add specific addresses here if any test orders use a non-alensa.eu email
 ]
 TEAM_EMAIL_DOMAINS: list[str] = [
-    # "alensa.eu",
+    "alensa.eu",  # all internal/team test orders use the company domain
 ]
 
 
