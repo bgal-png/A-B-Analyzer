@@ -301,6 +301,12 @@ USED_COLUMNS = {
     "orderMonth", "orderDay", "categoriesData-brand", "categoriesData-items-type",
     *PROFIT_COLS.values(),
 }
+# Repeating-text columns read straight as category to cut peak memory on big CSVs.
+CAT_COLUMNS = {
+    COL_TEST, COL_VARIANT, COL_ITEMTYPE, "payment", "orderDestinationCountryId",
+    "delivery_type", "itemname", "commonName", "orderMonth", "orderDay",
+    "categoriesData-brand", "categoriesData-items-type",
+}
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
@@ -310,9 +316,11 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     if name.lower().endswith((".xlsx", ".xls")):
         df = pd.read_excel(io.BytesIO(raw), dtype=str, usecols=wanted)
     else:
-        # Semicolon-delimited, UTF-8 BOM. Read as str, coerce numerics after.
+        # Semicolon-delimited, UTF-8 BOM. Read repeating text as category (lower peak),
+        # the rest as str; coerce numerics after.
+        dtypes = {c: ("category" if c in CAT_COLUMNS else str) for c in USED_COLUMNS}
         df = pd.read_csv(
-            io.BytesIO(raw), sep=";", dtype=str, usecols=wanted,
+            io.BytesIO(raw), sep=";", dtype=dtypes, usecols=wanted,
             encoding="utf-8-sig", keep_default_na=False,
         )
     df.columns = [c.strip() for c in df.columns]
@@ -353,25 +361,21 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     cname = df["commonName"] if "commonName" in df.columns else pd.Series("", index=df.index)
     if "categoriesData-brand" in df.columns:
         norm_to_brand = {normalize_text(b): b for b in PRIVATE_BRANDS}
-        df["_brand"] = df["categoriesData-brand"].fillna("").map(
+        df["_brand"] = df["categoriesData-brand"].astype(str).map(
             lambda b: norm_to_brand.get(normalize_text(b), ""))
     else:
-        df["_brand"] = [detect_brand(a, b) for a, b in zip(iname, cname)]
+        df["_brand"] = [detect_brand(a, b) for a, b in zip(iname.astype(str), cname.astype(str))]
     df["_is_private"] = df["_brand"] != ""
 
     # Contact-lens flag ("Pouze čočky"): prefer categoriesData-items-type == "Contact
     # lenses"; fall back to the Czech commonName containing "čoč". The private split
     # counts orders that contain a private-brand contact lens.
     if "categoriesData-items-type" in df.columns:
-        df["_is_lens"] = df["categoriesData-items-type"].fillna("") == "Contact lenses"
+        itype = df["categoriesData-items-type"].astype(str)
+        df["_is_lens"] = itype == "Contact lenses"
+        df["_item_category"] = itype.where(itype.str.strip() != "", "(uncategorized)")
     else:
-        df["_is_lens"] = cname.str.contains("čoč", case=False, na=False)
-
-    # Product category (Contact lenses / Solutions / Glasses / …) for filtering and
-    # grouping — independent of the private-brand flag.
-    if "categoriesData-items-type" in df.columns:
-        df["_item_category"] = df["categoriesData-items-type"].fillna("").replace("", "(uncategorized)")
-    else:
+        df["_is_lens"] = cname.astype(str).str.contains("čoč", case=False, na=False)
         df["_item_category"] = df["_is_lens"].map({True: "Contact lenses", False: "(uncategorized)"})
 
     # Project / eshop label from ref_projects id.
@@ -384,6 +388,14 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
              "categoriesData-brand", "categoriesData-items-type", "_is_lens",
              *PROFIT_COLS.values()]
     df = df.drop(columns=[c for c in spent if c in df.columns])
+
+    # Shrink memory on large files: store repeating text columns as category.
+    # (Numerics kept as-is so revenue/margin sums stay exact to the cent.)
+    for c in ("ab_test_name", "ab_test_variant", COL_ITEMTYPE, "payment",
+              "orderDestinationCountryId", "delivery_type", "itemname", "commonName",
+              "orderMonth", "orderDay", "_brand", "_item_category", "_project"):
+        if c in df.columns:
+            df[c] = df[c].astype("category")
     return df
 
 
@@ -932,7 +944,7 @@ def main() -> None:
         )
         if group_by:
             recs = []
-            for keys, grp in work.groupby(group_by):
+            for keys, grp in work.groupby(group_by, observed=True):
                 keys = keys if isinstance(keys, tuple) else (keys,)
                 rec = {label_map.get(g, g): k for g, k in zip(group_by, keys)}
                 rec.update(metrics_for(grp, use_gross, profit_col))
