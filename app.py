@@ -233,6 +233,79 @@ def device_styler(tbl: pd.DataFrame):
             .apply(highlight, subset=rate_cols))
 
 
+def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
+    """VWO-only per-variant table for one device segment (Variant matches the main table).
+
+    Columns: Variant, Visitors, VWO conv., Conv. rate %, CR lift % (vs control), + TOTAL.
+    CR lift is computed from these segment counts (VWO's Bayesian improvement isn't in the
+    segment response).
+    """
+    ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
+    vids = sorted(seg, key=lambda x: (len(x), x))
+
+    def cr(vid):
+        s = seg.get(vid, {})
+        vis = s.get("visitors", 0)
+        return (s.get("conversions", 0) / vis * 100) if vis else None
+
+    ctrl_vid = next((v for v in vids if v in ctrl), None)
+    ctrl_cr = cr(ctrl_vid) if ctrl_vid else None
+
+    rows, tot_v, tot_c = [], 0, 0
+    for vid in vids:
+        s = seg.get(vid, {})
+        vis, con, c = s.get("visitors", 0), s.get("conversions", 0), cr(vid)
+        is_ctrl = vid in ctrl
+        rows.append({
+            "Variant": f"{vid} (ctrl)" if is_ctrl else vid,
+            "Visitors": vis, "VWO conv.": con,
+            "Conv. rate %": round(c, 2) if c is not None else None,
+            "CR lift %": (None if is_ctrl or not ctrl_cr or c is None
+                          else round((c / ctrl_cr - 1) * 100, 2)),
+        })
+        tot_v += vis
+        tot_c += con
+    rows.append({"Variant": "TOTAL", "Visitors": tot_v, "VWO conv.": tot_c,
+                 "Conv. rate %": round(tot_c / tot_v * 100, 2) if tot_v else None,
+                 "CR lift %": None})
+    return pd.DataFrame(rows)
+
+
+def device_variant_styler(tbl: pd.DataFrame):
+    """Styler for a single-device VWO table: ranks best/2nd CR% & lift% ignoring the TOTAL row."""
+    num_cols = [c for c in tbl.columns if c != "Variant"]
+    is_total = tbl["Variant"].astype(str).eq("TOTAL").to_numpy()
+
+    def fmt_for(c):
+        if "lift" in c:
+            return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+        if c.endswith("%"):
+            return lambda v: "" if pd.isna(v) else f"{v:.2f}%"
+        return lambda v: "" if pd.isna(v) else f"{int(v):,}"
+
+    def highlight(col):
+        s = pd.to_numeric(col, errors="coerce")
+        ranked = s.where(~is_total)  # TOTAL never wins a highlight
+        uniq = sorted(ranked.dropna().unique(), reverse=True)
+        best = uniq[0] if uniq else None
+        second = uniq[1] if len(uniq) > 1 else None
+        out = []
+        for v, t in zip(s, is_total):
+            if t or pd.isna(v):
+                out.append("")
+            elif best is not None and v == best:
+                out.append("background-color: rgba(76,175,80,0.30)")
+            elif second is not None and v == second:
+                out.append("background-color: rgba(240,200,70,0.28)")
+            else:
+                out.append("")
+        return out
+
+    rate_cols = [c for c in num_cols if c.endswith("%")]
+    return (tbl.style.format({c: fmt_for(c) for c in num_cols})
+            .apply(highlight, subset=rate_cols))
+
+
 def _extract_campaign_list(payload) -> list:
     """Find the first list of campaign-like dicts anywhere in the response."""
     from collections import deque
@@ -1112,6 +1185,37 @@ def main() -> None:
                                            **{"background-color": "rgba(70,130,255,0.13)"})
         st.dataframe(styler, use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
+
+        # Two VWO-only device tables (mobile+tablet, desktop) under the main per-variant table.
+        if vwo_token and selected_test:
+            ddata = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
+            if ddata and not ddata.get("_error"):
+                pid = vwo_primary_goal_id(ddata)
+                dr = ddata.get("dataIntervalRange", {})
+                s_ts = dr.get("limitingStartTime") or dr.get("startTime")
+                e_ts = dr.get("limitingEndTime") or dr.get("endTime")
+                if pid and s_ts and e_ts:
+                    with st.spinner("Fetching device split from VWO…"):
+                        segs = {
+                            "mobile": fetch_vwo_segment(str(acc), str(selected_test), vwo_token,
+                                                        ("mobile", "tablet"), pid, s_ts, e_ts),
+                            "desktop": fetch_vwo_segment(str(acc), str(selected_test), vwo_token,
+                                                         ("desktop",), pid, s_ts, e_ts),
+                        }
+                    st.markdown("##### Device split — VWO only")
+                    st.caption("VWO visitors/conversions for each device segment (campaign-wide, "
+                               "all eshops). CR% = conversions ÷ visitors; CR lift % vs control is "
+                               "computed from these counts (not VWO's Bayesian improvement).")
+                    for label, key in (("📱 Mobile + tablet", "mobile"), ("🖥️ Desktop", "desktop")):
+                        seg = segs[key]
+                        st.markdown(f"**{label}**")
+                        if seg.get("_error"):
+                            st.caption(f"Unavailable: {seg['_error']}")
+                            continue
+                        dt = vwo_device_one_table(ddata, seg)
+                        st.dataframe(device_variant_styler(dt), use_container_width=True,
+                                     hide_index=True)
+                        download_button(dt, f"Download {key} split", f"per_variant_{key}")
 
         if show_private:
             cat_note = (f" in {', '.join(sel_cat)}" if sel_cat else "")
