@@ -926,8 +926,41 @@ def render_vwo_page() -> None:
                     f"- {fmt_date(p['start'])} → {fmt_date(p['end'])}  ·  {p['days']} d" for p in periods))
 
 
+def disable_clear_cache_shortcut() -> None:
+    """Disable Streamlit's bare-'c' "Clear cache" hotkey.
+
+    That shortcut wipes the cache and forces a full reload of large exports (costly /
+    OOM-prone here). We attach a capture-phase keydown listener on the parent window
+    once, so it pre-empts Streamlit's own handler. Ctrl/Cmd+C (copy) is left untouched,
+    and the key still works normally inside text inputs.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+          var p = window.parent;
+          if (!p || p.__abNoCacheClear) return;   // attach once across reruns
+          p.__abNoCacheClear = true;
+          p.addEventListener('keydown', function (e) {
+            if ((e.key === 'c' || e.key === 'C') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              var t = e.target || {};
+              var tag = (t.tagName || '').toLowerCase();
+              if (tag !== 'input' && tag !== 'textarea' && !t.isContentEditable) {
+                e.stopImmediatePropagation();
+                e.preventDefault();
+              }
+            }
+          }, true);  // capture phase → runs before Streamlit's listener
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="A/B Sales Analyzer", layout="wide")
+    disable_clear_cache_shortcut()
     head_l, head_r = st.columns([4, 1], vertical_alignment="center")
     head_l.title("A/B Sales Analyzer")
     with head_r:
