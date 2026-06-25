@@ -912,6 +912,39 @@ def render_vwo_page() -> None:
         st.info("Add `vwo_token` (and `vwo_account_id`) to Streamlit secrets to use this section.")
         return
 
+    # 📤 Fill just the VWO + device blocks in the sheet — no sales export needed.
+    if gsheets_ready():
+        with st.expander("📤 Update VWO blocks in Google Sheets (no sales export needed)"):
+            try:
+                default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
+            except Exception:
+                default_sid = ""
+            sid = st.text_input("Target spreadsheet — paste link or id", value=default_sid,
+                                key="vwo_only_sid")
+            st.caption(f"Fills only the **VWO + Desktop/Mobile** blocks (and dates) on each tab; "
+                       f"the **Alensis** block is left untouched. Writes as `{gsa_email()}` "
+                       "(must be an Editor). Tabs matched by the campaign id in their **B1** link.")
+            if st.button("Update VWO blocks on all tabs", key="vwo_only_fill"):
+                try:
+                    sh = _open_spreadsheet(_gsheets_client(), sid)
+                    tabs = campaign_tab_map(sh)
+                    if not tabs:
+                        st.warning("No tabs with a VWO campaign link in B1.")
+                    else:
+                        done, skipped = [], []
+                        for cid, ws in tabs.items():
+                            try:
+                                write_template_blocks(ws, ws.title, None,
+                                                      vwo_block_data(cid, acc, token))
+                                done.append(ws.title)
+                            except Exception as we:  # noqa: BLE001
+                                skipped.append(f"{ws.title} ({we})")
+                        st.success(f"Updated VWO blocks on {len(done)} tab(s): {', '.join(done) or '—'}")
+                        if skipped:
+                            st.caption("Skipped: " + "; ".join(skipped))
+                except Exception as e:  # noqa: BLE001
+                    show_gsheets_error(e)
+
     # Either browse the list by name, OR type IDs directly — one or the other.
     browse = st.toggle("Browse by name (otherwise enter IDs below)", value=False)
     dev_split = st.toggle("📱 Add device split (desktop vs mobile + tablet)", value=False,
@@ -1173,9 +1206,10 @@ def write_template_blocks(ws, eshop: str, vdf, vwo: dict) -> None:
     Alensis money is CZK; VWO money keeps the tab's own (as-is) cell format.
     """
     pos = _find_template_anchors(ws)
-    if "vwo" not in pos or "alensis" not in pos:
-        raise RuntimeError("Template anchors not found — the tab needs merged 'VWO' and "
-                           "'Alensis' titles in column A (build it from the TEMPLATE tab).")
+    if "vwo" not in pos or (vdf is not None and "alensis" not in pos):
+        raise RuntimeError("Template anchors not found — the tab needs a merged 'VWO' "
+                           "title in column A (and 'Alensis' when writing sales data). "
+                           "Build it from the TEMPLATE tab.")
     vmap = {str(r["Variant"]): r for _, r in vdf.iterrows()} if vdf is not None else {}
     values, fmts = [], []
     pct = {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}}
@@ -1208,21 +1242,24 @@ def write_template_blocks(ws, eshop: str, vdf, vwo: dict) -> None:
             fmts.append({"range": f"E{d0 + 1}:E{d0 + 4}", "format": pct})
 
     # ---- Alensis block: header-driven — fill each column by matching its header label ----
-    a0 = pos["alensis"]
-    values += [{"range": f"A{a0 + 1}", "values": [[vwo.get("date", "")]]},
-               {"range": f"A{a0 + 2}", "values": [[eshop]]}]
-    fmt_obj = {"int": intf, "pct": pct, "kc": kc}
-    header = ws.row_values(a0 + 2)  # the template's labels are already there
-    for idx, label in enumerate(header, start=1):
-        spec = ALENSIS_LABELS.get(normalize_text(label))
-        if not spec:
-            continue
-        vcol, fmt = spec
-        col = _col_letter(idx)
-        colvals = [[_clean(vmap[v][vcol]) if (v in vmap and vcol in vdf.columns) else ""]
-                   for v in GS_VARS]
-        values.append({"range": f"{col}{a0 + 3}:{col}{a0 + 6}", "values": colvals})
-        fmts.append({"range": f"{col}{a0 + 3}:{col}{a0 + 6}", "format": fmt_obj[fmt]})
+    # Skipped entirely when there's no sales export (vdf is None) — VWO-only update leaves
+    # the Alensis block untouched rather than blanking it.
+    if vdf is not None and "alensis" in pos:
+        a0 = pos["alensis"]
+        values += [{"range": f"A{a0 + 1}", "values": [[vwo.get("date", "")]]},
+                   {"range": f"A{a0 + 2}", "values": [[eshop]]}]
+        fmt_obj = {"int": intf, "pct": pct, "kc": kc}
+        header = ws.row_values(a0 + 2)  # the template's labels are already there
+        for idx, label in enumerate(header, start=1):
+            spec = ALENSIS_LABELS.get(normalize_text(label))
+            if not spec:
+                continue
+            vcol, fmt = spec
+            col = _col_letter(idx)
+            colvals = [[_clean(vmap[v][vcol]) if (v in vmap and vcol in vdf.columns) else ""]
+                       for v in GS_VARS]
+            values.append({"range": f"{col}{a0 + 3}:{col}{a0 + 6}", "values": colvals})
+            fmts.append({"range": f"{col}{a0 + 3}:{col}{a0 + 6}", "format": fmt_obj[fmt]})
 
     ws.batch_update(values, value_input_option="USER_ENTERED")
     ws.batch_format(fmts)
@@ -1255,20 +1292,18 @@ def compute_variant_block(df: pd.DataFrame, test_id: str, use_gross: bool,
     return vdf, var_names
 
 
-def compute_template_data(df: pd.DataFrame, test_id: str, use_gross: bool,
-                          profit_col: str | None, vwo_acc, vwo_token):
-    """Everything to fill a template tab for one test: (alensis vdf, VWO dict).
+def vwo_block_data(test_id: str, vwo_acc, vwo_token) -> dict:
+    """VWO dict for one campaign (no sales export needed): {date, main, desktop, mobile}.
 
-    VWO dict: {date, main, desktop, mobile} where each variant maps to
-    {vis, conv, impr, cr, rev, avg} (fractions for cr/impr; rev as VWO returns it).
+    Each variant maps to {vis, conv, impr, cr, rev, avg} (fractions for cr/impr; rev as
+    VWO returns it). Used to fill the VWO + Desktop/Mobile blocks on their own.
     """
-    vdf, _ = compute_variant_block(df, test_id, use_gross, profit_col, vwo_acc, vwo_token)
     vwo = {"date": "", "main": {}, "desktop": {}, "mobile": {}}
     if not vwo_token:
-        return vdf, vwo
+        return vwo
     data = fetch_vwo_campaign(str(vwo_acc), str(test_id), vwo_token)
     if not data or data.get("_error"):
-        return vdf, vwo
+        return vwo
     counts = vwo_primary_counts(data)
     impr = vwo_primary_improvement(data)
     revv = vwo_revenue_value(data)
@@ -1298,7 +1333,14 @@ def compute_template_data(df: pd.DataFrame, test_id: str, use_gross: bool,
                     vwo[key][v] = {"vis": vis, "conv": conv,
                                    "cr": (conv / vis) if vis else None, "rev": rev,
                                    "avg": (rev / conv) if (rev is not None and conv) else None}
-    return vdf, vwo
+    return vwo
+
+
+def compute_template_data(df: pd.DataFrame, test_id: str, use_gross: bool,
+                          profit_col: str | None, vwo_acc, vwo_token):
+    """Everything to fill a template tab for one test: (Alensis vdf, VWO dict)."""
+    vdf, _ = compute_variant_block(df, test_id, use_gross, profit_col, vwo_acc, vwo_token)
+    return vdf, vwo_block_data(test_id, vwo_acc, vwo_token)
 
 
 def disable_clear_cache_shortcut() -> None:
