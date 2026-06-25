@@ -1428,18 +1428,29 @@ def main() -> None:
 
         # 📤 Push the per-variant numbers into the finalization Google Sheet's
         # "Pro porovnání z Analyzeru (BG)" block (routed by each tab's B1 campaign link).
-        if selected_test and gsheets_ready():
+        if selected_test:
             with st.expander("📤 Send to Google Sheets (Analyzer comparison block)"):
-                default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
-                sid = st.text_input("Target spreadsheet (id or URL)", value=default_sid,
-                                    help="Finalization spreadsheet; defaults to the one in secrets.")
+                try:
+                    default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
+                except Exception:
+                    default_sid = ""
+                sid = st.text_input("Target spreadsheet — paste the link or id", value=default_sid,
+                                    placeholder="https://docs.google.com/spreadsheets/d/…/edit")
+                if not gsheets_ready():
+                    st.info(
+                        "**One-time setup needed to write.** The spreadsheet above you just paste — "
+                        "but to *write* into it the app needs a Google **service-account key** (its "
+                        "login). A link alone can't grant write access. Add a `[gcp_service_account]` "
+                        "block to the app's secrets once (see README → *Send to Google Sheets*); then "
+                        "the buttons appear here. Until then, use **Download per-variant** above and "
+                        "paste manually.")
                 vnames: dict[str, str] = {}
-                if vwo_token:
+                if gsheets_ready() and vwo_token:
                     d0 = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
                     if d0 and not d0.get("_error"):
                         vnames = {str(x["id"]): x.get("name", "") for x in d0.get("variations", [])}
-                c1, c2 = st.columns(2)
-                if c1.button(f"Send test {selected_test} → its tab", use_container_width=True):
+                c1, c2 = st.columns(2) if gsheets_ready() else (None, None)
+                if gsheets_ready() and c1.button(f"Send test {selected_test} → its tab", use_container_width=True):
                     try:
                         sh = _open_spreadsheet(_gsheets_client(), sid)
                         ws = campaign_tab_map(sh).get(str(selected_test))
@@ -1451,7 +1462,7 @@ def main() -> None:
                             st.success(f"Wrote {len(rows)} variants to “{ws.title}”.")
                     except Exception as e:  # noqa: BLE001
                         st.error(f"Failed: {type(e).__name__}: {e}")
-                if c2.button("Fill all tabs from this export", use_container_width=True):
+                if gsheets_ready() and c2.button("Fill all tabs from this export", use_container_width=True):
                     try:
                         sh = _open_spreadsheet(_gsheets_client(), sid)
                         tabs = campaign_tab_map(sh)
@@ -1472,14 +1483,12 @@ def main() -> None:
                                 st.caption("Skipped (campaign not in this export): " + "; ".join(skipped))
                     except Exception as e:  # noqa: BLE001
                         st.error(f"Failed: {type(e).__name__}: {e}")
-                st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link. "
-                           "**Send** uses the current per-variant view (respects your filters); "
-                           "**Fill all** uses each campaign's full data from the export. Money is "
-                           "written in CZK as in the export; percentages go in as fractions into "
-                           "percent-formatted cells. Re-sending overwrites the block in place.")
-        elif selected_test:
-            st.caption("ℹ️ Add a `gcp_service_account` + `gsheets_spreadsheet_id` to secrets to "
-                       "enable **Send to Google Sheets**.")
+                if gsheets_ready():
+                    st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link. "
+                               "**Send** uses the current per-variant view (respects your filters); "
+                               "**Fill all** uses each campaign's full data from the export. Money is "
+                               "written in CZK as in the export; percentages go in as fractions into "
+                               "percent-formatted cells. Re-sending overwrites the block in place.")
 
         # Two VWO-only device tables (mobile+tablet, desktop) under the main per-variant table.
         if vwo_token and selected_test:
