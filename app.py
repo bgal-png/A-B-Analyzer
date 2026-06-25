@@ -177,7 +177,7 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
 
 
 def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
-    """Desktop vs Mobile+Tablet per variation: Visitors, Conversions, CR%, lift% vs control."""
+    """Desktop vs Mobile+Tablet per variation: Visitors, Conversions, CR%, VWO Impr% vs control."""
     names = {str(v["id"]): v.get("name", "") for v in data.get("variations", [])}
     ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
     vids = sorted(set(desk) | set(mob), key=lambda x: (len(x), x))
@@ -186,10 +186,6 @@ def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
         s = seg.get(vid, {})
         vis = s.get("visitors", 0)
         return (s.get("conversions", 0) / vis * 100) if vis else None
-
-    ctrl_vid = next((v for v in vids if v in ctrl), None)
-    desk_ctrl = cr(desk, ctrl_vid) if ctrl_vid else None
-    mob_ctrl = cr(mob, ctrl_vid) if ctrl_vid else None
 
     rows = []
     for vid in vids:
@@ -201,23 +197,21 @@ def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
             "Desktop vis": dv.get("visitors", 0),
             "Desktop conv": dv.get("conversions", 0),
             "Desktop CR%": round(d_cr, 2) if d_cr is not None else None,
-            "Desktop lift%": (None if is_ctrl or not desk_ctrl or d_cr is None
-                              else round((d_cr / desk_ctrl - 1) * 100, 2)),
+            "Desktop Impr%": None if is_ctrl else dv.get("improvement"),
             "Mob+Tab vis": mv.get("visitors", 0),
             "Mob+Tab conv": mv.get("conversions", 0),
             "Mob+Tab CR%": round(m_cr, 2) if m_cr is not None else None,
-            "Mob+Tab lift%": (None if is_ctrl or not mob_ctrl or m_cr is None
-                              else round((m_cr / mob_ctrl - 1) * 100, 2)),
+            "Mob+Tab Impr%": None if is_ctrl else mv.get("improvement"),
         })
     return pd.DataFrame(rows)
 
 
 def device_styler(tbl: pd.DataFrame):
-    """Styler for the device table: ints, CR% plain, lift% signed; best CR/lift highlighted."""
+    """Styler for the device table: ints, CR% plain, Impr% signed; best CR/Impr highlighted."""
     num_cols = [c for c in tbl.columns if c != "Variation"]
 
     def fmt_for(c):
-        if "lift" in c:
+        if "Impr" in c:
             return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
         if c.endswith("%"):
             return lambda v: "" if pd.isna(v) else f"{v:.2f}%"
@@ -929,7 +923,7 @@ def render_vwo_page() -> None:
                     col.caption(f"Device split unavailable: {err}")
                 else:
                     col.markdown("**Device split** · desktop vs mobile + tablet "
-                                 "(primary goal · lift% vs control within each device)")
+                                 "(primary goal · VWO Impr% vs control within each device)")
                     devt = vwo_device_compare_table(data, desk, mob)
                     col.dataframe(device_styler(devt), use_container_width=True, hide_index=True)
                     download_button(devt, f"Download device split {cid}", f"vwo_dev_{cid}")
