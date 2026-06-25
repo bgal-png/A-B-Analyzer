@@ -987,27 +987,37 @@ def disable_clear_cache_shortcut() -> None:
     """Disable Streamlit's bare-'c' "Clear cache" hotkey.
 
     That shortcut wipes the cache and forces a full reload of large exports (costly /
-    OOM-prone here). We attach a capture-phase keydown listener on the parent window
-    once, so it pre-empts Streamlit's own handler. Ctrl/Cmd+C (copy) is left untouched,
-    and the key still works normally inside text inputs.
+    OOM-prone here). A listener attached from the component iframe dies when Streamlit
+    reruns and tears the iframe down — leaving a gap where a quick 'c' still fires. So
+    we instead inject a <script> into the *parent* document, so the capture-phase
+    keydown listener lives in the app's own realm and persists across reruns. It also
+    blocks keypress/keyup as a backstop. Ctrl/Cmd+C (copy) and typing in inputs are
+    untouched. Guarded by element id so it's injected only once.
     """
     components.html(
         """
         <script>
         (function () {
-          var p = window.parent;
-          if (!p || p.__abNoCacheClear) return;   // attach once across reruns
-          p.__abNoCacheClear = true;
-          p.addEventListener('keydown', function (e) {
-            if ((e.key === 'c' || e.key === 'C') && !e.ctrlKey && !e.metaKey && !e.altKey) {
-              var t = e.target || {};
-              var tag = (t.tagName || '').toLowerCase();
-              if (tag !== 'input' && tag !== 'textarea' && !t.isContentEditable) {
-                e.stopImmediatePropagation();
-                e.preventDefault();
-              }
-            }
-          }, true);  // capture phase → runs before Streamlit's listener
+          var p = window.parent, d = p && p.document;
+          if (!d || d.getElementById('ab-no-cache-clear')) return;
+          var sc = d.createElement('script');
+          sc.id = 'ab-no-cache-clear';
+          sc.textContent =
+            "(function(){" +
+            "  function block(e){" +
+            "    if((e.key==='c'||e.key==='C')&&!e.ctrlKey&&!e.metaKey&&!e.altKey){" +
+            "      var t=e.target||{}, tag=(t.tagName||'').toLowerCase();" +
+            "      if(tag!=='input'&&tag!=='textarea'&&!t.isContentEditable){" +
+            "        e.stopImmediatePropagation(); e.preventDefault();" +
+            "      }" +
+            "    }" +
+            "  }" +
+            "  ['keydown','keypress','keyup'].forEach(function(ev){" +
+            "    window.addEventListener(ev, block, true);" +     // capture → before Streamlit
+            "    document.addEventListener(ev, block, true);" +
+            "  });" +
+            "})();";
+          (d.head || d.documentElement).appendChild(sc);
         })();
         </script>
         """,
