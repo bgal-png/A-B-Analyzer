@@ -516,6 +516,17 @@ PRIVATE_BRANDS = [
     "Private label", "Válle", "Marisio", "Kimikado", "Beron", "Crullé",
 ]
 
+# Internal / team test orders to drop from the report by default. Matched on the
+# customer-email column (auto-detected: any column whose name contains "mail").
+# Add exact addresses to TEAM_EMAILS, and/or whole domains to TEAM_EMAIL_DOMAINS
+# (e.g. "alensa.eu" excludes every @alensa.eu order). Case-insensitive.
+TEAM_EMAILS: list[str] = [
+    # "bgal@alensa.eu",
+]
+TEAM_EMAIL_DOMAINS: list[str] = [
+    # "alensa.eu",
+]
+
 
 def normalize_text(s: str) -> str:
     """Lowercase, strip accents, drop everything but a-z0-9 (collapses spaces/hyphens)."""
@@ -558,7 +569,8 @@ CAT_COLUMNS = {
 @st.cache_data(show_spinner=False, max_entries=2)
 def load_data(raw: bytes, name: str) -> pd.DataFrame:
     """Parse the uploaded export into a typed DataFrame (only the columns we use)."""
-    wanted = lambda c: str(c).strip() in USED_COLUMNS
+    # Read our known columns plus any email column (auto-detected by name) for team-order exclusion.
+    wanted = lambda c: (str(c).strip() in USED_COLUMNS) or ("mail" in str(c).strip().lower())
     if name.lower().endswith((".xlsx", ".xls")):
         df = pd.read_excel(io.BytesIO(raw), dtype=str, usecols=wanted)
     else:
@@ -623,6 +635,19 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     else:
         df["_is_lens"] = cname.astype(str).str.contains("čoč", case=False, na=False)
         df["_item_category"] = df["_is_lens"].map({True: "Contact lenses", False: "(uncategorized)"})
+
+    # Team / test-order flag from the customer email (auto-detected column).
+    email_col = next((c for c in df.columns if "mail" in c.lower()), None)
+    if email_col is not None:
+        em = df[email_col].astype(str).str.strip().str.lower()
+        team = {e.strip().lower() for e in TEAM_EMAILS if e.strip()}
+        doms = tuple("@" + d.strip().lower().lstrip("@") for d in TEAM_EMAIL_DOMAINS if d.strip())
+        df["_is_team"] = em.isin(team)
+        if doms:
+            df["_is_team"] = df["_is_team"] | em.str.endswith(doms)
+        df = df.drop(columns=[email_col])  # raw email not needed downstream
+    else:
+        df["_is_team"] = False
 
     # Project / eshop label from ref_projects id.
     if COL_PROJECT in df.columns:
@@ -1439,6 +1464,20 @@ def main() -> None:
                            help="Drops orders paid via a Showroom payment method."):
                 work = work[~work["payment"].astype(str).str.contains("showroom", case=False, na=False)]
 
+    # Team / internal test orders (matched on the customer email) — excluded by default.
+    exclude_team = False
+    if "_is_team" in df.columns and df["_is_team"].any():
+        n_team = (df.loc[df["_is_team"], COL_ORDER].nunique()
+                  if COL_ORDER in df.columns else int(df["_is_team"].sum()))
+        exclude_team = sb.checkbox(f"Exclude team / test orders ({n_team:,})", value=True,
+                                   help="Drops orders placed with an internal/team email "
+                                        "(TEAM_EMAILS / TEAM_EMAIL_DOMAINS) — your A/B test orders. "
+                                        "Applies everywhere, including the Google Sheets export.")
+        if exclude_team:
+            work = work[~work["_is_team"]]
+    # df the Google Sheets export uses (team orders dropped to match the on-screen report).
+    report_df = df[~df["_is_team"]] if (exclude_team and "_is_team" in df.columns) else df
+
     # Item type. Selection stored now and applied to work below. In Per-variant it
     # constrains revenue (via _is_product) but never the margin, which spans all lines.
     item_keep = None
@@ -1612,7 +1651,7 @@ def main() -> None:
                         if ws is None:
                             st.error(f"No tab references campaign {selected_test} in its B1 link.")
                         else:
-                            tvdf, tvwo = compute_template_data(df, selected_test, use_gross,
+                            tvdf, tvwo = compute_template_data(report_df, selected_test, use_gross,
                                                                profit_col, acc, vwo_token)
                             write_template_blocks(ws, ws.title, tvdf, tvwo)
                             st.success(f"Filled VWO + Alensis blocks on “{ws.title}”.")
@@ -1627,7 +1666,7 @@ def main() -> None:
                         else:
                             done, skipped = [], []
                             for cid, ws in tabs.items():
-                                tvdf, tvwo = compute_template_data(df, cid, use_gross,
+                                tvdf, tvwo = compute_template_data(report_df, cid, use_gross,
                                                                    profit_col, acc, vwo_token)
                                 if tvdf is None or tvdf.empty:
                                     skipped.append(f"{ws.title} ({cid})")

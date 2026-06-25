@@ -11,6 +11,11 @@ export, then copy or download clean figures for your master sheet.
   double-count. Rows outside the test are excluded.
 - **Filters:** test, variant, date window, exclude cancelled, final-only, item
   type, include/exclude delivery lines, payment, country, delivery type, item name.
+- **Exclude team / test orders** (default on): orders placed with an internal email are
+  dropped from every view and the Sheets export. The email column is auto-detected (any
+  column whose name contains "mail"); the team is defined by `TEAM_EMAILS` (exact addresses)
+  and/or `TEAM_EMAIL_DOMAINS` (whole domains) in [`app.py`](app.py). The raw email is used
+  only for this flag and then discarded (never stored or exported).
 - **Private brands** = the `PRIVATE_BRANDS` list (any product type), read from the
   authoritative `categoriesData-brand` column when present (fallback: accent-/case-
   insensitive item-name matching). The per-variant private split flags orders that
