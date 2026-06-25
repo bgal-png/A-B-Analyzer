@@ -131,15 +131,18 @@ def vwo_primary_goal_id(data: dict):
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
 def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tuple,
-                      goal_id, start_ts, end_ts) -> dict:
-    """{variation_id: {visitors, conversions}} for a device segment, via post-segmentation.
+                      goal_ids: tuple, primary_id, revenue_id, start_ts, end_ts) -> dict:
+    """{variation_id: {visitors, conversions, revenue, improvement}} for a device segment.
 
     `devices` is a tuple like ("desktop",) or ("mobile", "tablet"). Uses a *custom*
     segment so the device operand actually filters (a "predefined" id is server-side
-    and ignores the operand). On failure returns {"_error": "..."}.
+    and ignores the operand). All goal ids are requested in one call: a single goal
+    returns only raw counts, but multiple goals trigger full stats — so the primary
+    goal then carries `relativeImprovementRate` (→ Improvement %) and the revenue goal
+    carries `totalRevenue`. On failure returns {"_error": "..."}.
     """
     body = {
-        "goals": str(goal_id),
+        "goals": ",".join(str(g) for g in goal_ids) or str(primary_id),
         "id": int(campaign_id),
         "startTime": int(start_ts),
         "endTime": int(end_ts),
@@ -153,12 +156,19 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
         d = res.get("_data", res)  # the regional endpoint wraps the report in `_data`
         out: dict[str, dict] = {}
         for vgd in d.get("variationGoalData", []):
-            if goal_id is not None and str(vgd.get("goal")) != str(goal_id):
-                continue
+            g = str(vgd.get("goal"))
+            vid = str(vgd.get("variation"))
             agg = vgd.get("aggregated", {})
-            out[str(vgd.get("variation"))] = {
-                "visitors": int(agg.get("visitorCount", 0)),
-                "conversions": int(agg.get("conversionCount", 0))}
+            rec = out.setdefault(vid, {"visitors": 0, "conversions": 0,
+                                       "revenue": None, "improvement": None})
+            if g == str(primary_id):
+                rec["visitors"] = int(agg.get("visitorCount", 0))
+                rec["conversions"] = int(agg.get("conversionCount", 0))
+                ri = agg.get("relativeImprovementRate")
+                med = ri.get("median") if isinstance(ri, dict) else None
+                rec["improvement"] = round(med * 100, 2) if med is not None else None
+            if revenue_id is not None and g == str(revenue_id) and "totalRevenue" in agg:
+                rec["revenue"] = round(float(agg.get("totalRevenue", 0)), 2)
         return out or {"_error": "no segment data"}
     except urllib.error.HTTPError as e:
         return {"_error": f"HTTP {e.code} {e.reason}"}
@@ -236,51 +246,54 @@ def device_styler(tbl: pd.DataFrame):
 def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
     """VWO-only per-variant table for one device segment (Variant matches the main table).
 
-    Columns: Variant, Visitors, VWO conv., Conv. rate %, CR lift % (vs control), + TOTAL.
-    CR lift is computed from these segment counts (VWO's Bayesian improvement isn't in the
-    segment response).
+    Columns: Variant, Visitors, VWO conv., Conv. rate %, Improvement %, VWO revenue, + TOTAL.
+    Improvement % is VWO's relativeImprovementRate (median) vs control; VWO revenue is the
+    revenue goal's totalRevenue for this device. The revenue column is dropped if the
+    campaign has no revenue goal.
     """
     ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
-    vids = sorted(seg, key=lambda x: (len(x), x))
+    vids = sorted((k for k in seg if not k.startswith("_")), key=lambda x: (len(x), x))
 
-    def cr(vid):
-        s = seg.get(vid, {})
-        vis = s.get("visitors", 0)
-        return (s.get("conversions", 0) / vis * 100) if vis else None
-
-    ctrl_vid = next((v for v in vids if v in ctrl), None)
-    ctrl_cr = cr(ctrl_vid) if ctrl_vid else None
-
-    rows, tot_v, tot_c = [], 0, 0
+    rows, tot_v, tot_c, tot_r, any_rev = [], 0, 0, 0.0, False
     for vid in vids:
         s = seg.get(vid, {})
-        vis, con, c = s.get("visitors", 0), s.get("conversions", 0), cr(vid)
-        is_ctrl = vid in ctrl
+        vis, con = s.get("visitors", 0), s.get("conversions", 0)
+        cr = (con / vis * 100) if vis else None
+        rev, is_ctrl = s.get("revenue"), vid in ctrl
         rows.append({
             "Variant": f"{vid} (ctrl)" if is_ctrl else vid,
             "Visitors": vis, "VWO conv.": con,
-            "Conv. rate %": round(c, 2) if c is not None else None,
-            "CR lift %": (None if is_ctrl or not ctrl_cr or c is None
-                          else round((c / ctrl_cr - 1) * 100, 2)),
+            "Conv. rate %": round(cr, 2) if cr is not None else None,
+            "Improvement %": None if is_ctrl else s.get("improvement"),
+            "VWO revenue": rev,
         })
         tot_v += vis
         tot_c += con
+        if rev is not None:
+            tot_r += rev
+            any_rev = True
     rows.append({"Variant": "TOTAL", "Visitors": tot_v, "VWO conv.": tot_c,
                  "Conv. rate %": round(tot_c / tot_v * 100, 2) if tot_v else None,
-                 "CR lift %": None})
-    return pd.DataFrame(rows)
+                 "Improvement %": None, "VWO revenue": tot_r if any_rev else None})
+    df = pd.DataFrame(rows)
+    if not any_rev:
+        df = df.drop(columns=["VWO revenue"])  # campaign has no revenue goal
+    return df
 
 
 def device_variant_styler(tbl: pd.DataFrame):
-    """Styler for a single-device VWO table: ranks best/2nd CR% & lift% ignoring the TOTAL row."""
+    """Styler for a single-device VWO table: ranks best/2nd CR%, Improvement% & revenue,
+    ignoring the TOTAL row."""
     num_cols = [c for c in tbl.columns if c != "Variant"]
     is_total = tbl["Variant"].astype(str).eq("TOTAL").to_numpy()
 
     def fmt_for(c):
-        if "lift" in c:
+        if "Improvement" in c or "lift" in c:
             return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
         if c.endswith("%"):
             return lambda v: "" if pd.isna(v) else f"{v:.2f}%"
+        if "revenue" in c:
+            return lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč"
         return lambda v: "" if pd.isna(v) else f"{int(v):,}"
 
     def highlight(col):
@@ -301,9 +314,9 @@ def device_variant_styler(tbl: pd.DataFrame):
                 out.append("")
         return out
 
-    rate_cols = [c for c in num_cols if c.endswith("%")]
+    hl_cols = [c for c in num_cols if c.endswith("%") or "revenue" in c]
     return (tbl.style.format({c: fmt_for(c) for c in num_cols})
-            .apply(highlight, subset=rate_cols))
+            .apply(highlight, subset=hl_cols))
 
 
 def _extract_campaign_list(payload) -> list:
@@ -898,15 +911,19 @@ def render_vwo_page() -> None:
 
         if dev_split:
             pid = vwo_primary_goal_id(data)
+            goals = data.get("goals", [])
+            goal_ids = tuple(str(g.get("id")) for g in goals if g.get("id") is not None)
+            rev_id = next((g.get("id") for g in goals if g.get("type") == "revenue"), None)
             s_ts = dr.get("limitingStartTime") or dr.get("startTime")
             e_ts = dr.get("limitingEndTime") or dr.get("endTime")
             if not (pid and s_ts and e_ts):
                 col.caption("Device split unavailable — no goal/date range on this campaign.")
             else:
                 with st.spinner("Fetching device split from VWO…"):
-                    desk = fetch_vwo_segment(str(acc), cid, token, ("desktop",), pid, s_ts, e_ts)
-                    mob = fetch_vwo_segment(str(acc), cid, token, ("mobile", "tablet"),
-                                            pid, s_ts, e_ts)
+                    desk = fetch_vwo_segment(str(acc), cid, token, ("desktop",), goal_ids, pid,
+                                             rev_id, s_ts, e_ts)
+                    mob = fetch_vwo_segment(str(acc), cid, token, ("mobile", "tablet"), goal_ids,
+                                            pid, rev_id, s_ts, e_ts)
                 err = desk.get("_error") or mob.get("_error")
                 if err:
                     col.caption(f"Device split unavailable: {err}")
@@ -1224,6 +1241,9 @@ def main() -> None:
             ddata = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
             if ddata and not ddata.get("_error"):
                 pid = vwo_primary_goal_id(ddata)
+                goals = ddata.get("goals", [])
+                goal_ids = tuple(str(g.get("id")) for g in goals if g.get("id") is not None)
+                rev_id = next((g.get("id") for g in goals if g.get("type") == "revenue"), None)
                 dr = ddata.get("dataIntervalRange", {})
                 s_ts = dr.get("limitingStartTime") or dr.get("startTime")
                 e_ts = dr.get("limitingEndTime") or dr.get("endTime")
@@ -1231,14 +1251,16 @@ def main() -> None:
                     with st.spinner("Fetching device split from VWO…"):
                         segs = {
                             "mobile": fetch_vwo_segment(str(acc), str(selected_test), vwo_token,
-                                                        ("mobile", "tablet"), pid, s_ts, e_ts),
+                                                        ("mobile", "tablet"), goal_ids, pid,
+                                                        rev_id, s_ts, e_ts),
                             "desktop": fetch_vwo_segment(str(acc), str(selected_test), vwo_token,
-                                                         ("desktop",), pid, s_ts, e_ts),
+                                                         ("desktop",), goal_ids, pid,
+                                                         rev_id, s_ts, e_ts),
                         }
                     st.markdown("##### Device split — VWO only")
-                    st.caption("VWO visitors/conversions for each device segment (campaign-wide, "
-                               "all eshops). CR% = conversions ÷ visitors; CR lift % vs control is "
-                               "computed from these counts (not VWO's Bayesian improvement).")
+                    st.caption("VWO visitors / conversions / revenue for each device segment "
+                               "(campaign-wide, all eshops). CR% = conversions ÷ visitors; "
+                               "Improvement % is VWO's relative improvement vs control.")
                     # Two half-width tables side by side (mobile left, desktop right).
                     dev_cols = st.columns(2)
                     for (label, key), dcol in zip(
