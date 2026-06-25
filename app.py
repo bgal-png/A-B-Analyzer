@@ -676,12 +676,12 @@ def test_options(df: pd.DataFrame) -> list[str]:
 def clean_test_name(name: str) -> str:
     """Strip the noise from a VWO test name for the selector.
 
-    Removes bracketed segments — e.g. "(PDO, RHE)", "(.it, .si, .hr)" — and bare
-    domain-like tokens (the eshop is already shown separately), then collapses any
-    leftover separators. Falls back to the original name if cleaning empties it.
+    Removes bracketed segments — e.g. "(PDO, RHE)", country-code lists like
+    "(.it, .si, .hr)" — then collapses leftover separators. The project/eshop domain
+    in the name (e.g. "ihre-kontaktlinsen.de") is kept. Falls back to the original
+    name if cleaning would empty it.
     """
-    s = re.sub(r"[\(\[\{][^\)\]\}]*[\)\]\}]", " ", name)              # drop (…)/[…]/{…}
-    s = re.sub(r"\b[\w-]+(?:\.[a-z]{2,}){1,2}\b", " ", s, flags=re.I)  # drop domain-like tokens
+    s = re.sub(r"[\(\[\{][^\)\]\}]*[\)\]\}]", " ", name)  # drop (…)/[…]/{…}
     s = re.sub(r"\s{2,}", " ", s).strip(" -–—·,|")
     return s or name.strip()
 
