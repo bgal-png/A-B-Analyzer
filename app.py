@@ -673,6 +673,19 @@ def test_options(df: pd.DataFrame) -> list[str]:
     return sorted(seen, key=lambda x: (len(x), x))
 
 
+def clean_test_name(name: str) -> str:
+    """Strip the noise from a VWO test name for the selector.
+
+    Removes bracketed segments — e.g. "(PDO, RHE)", "(.it, .si, .hr)" — and bare
+    domain-like tokens (the eshop is already shown separately), then collapses any
+    leftover separators. Falls back to the original name if cleaning empties it.
+    """
+    s = re.sub(r"[\(\[\{][^\)\]\}]*[\)\]\}]", " ", name)              # drop (…)/[…]/{…}
+    s = re.sub(r"\b[\w-]+(?:\.[a-z]{2,}){1,2}\b", " ", s, flags=re.I)  # drop domain-like tokens
+    s = re.sub(r"\s{2,}", " ", s).strip(" -–—·,|")
+    return s or name.strip()
+
+
 def build_test_labels(df: pd.DataFrame, tests: list[str], vwo_acc, vwo_token) -> dict[str, str]:
     """Map each test id → 'id — eshop(s) · VWO name' so the Test selector is self-describing.
 
@@ -701,7 +714,7 @@ def build_test_labels(df: pd.DataFrame, tests: list[str], vwo_acc, vwo_token) ->
             doms = sorted({PROJECT_NAMES.get(p, p) for p in projs})
             bits.append(doms[0] if len(doms) == 1 else f"{len(doms)} eshops")
         if names.get(t):
-            bits.append(names[t])
+            bits.append(clean_test_name(names[t]))
         labels[t] = f"{t} — " + " · ".join(bits) if bits else t
     return labels
 
