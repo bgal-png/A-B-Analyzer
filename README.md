@@ -89,6 +89,12 @@ How it finds where to write:
 - **Block anchoring:** each block is located by its merged section title in column A
   (`VWO`, `Desktop`, `Mobile`, `Alensis`). Only the single-cell data grids are written —
   merged titles/headers are never touched.
+- **Alensis is header-driven:** the app fills each Alensis column by **matching its header
+  label** (accent-/case-insensitive), so you can add, rename, or reorder columns in the
+  template and the app keeps up — unknown headers are left alone. Recognised labels include
+  the private-brand split: *Počet objednávek bez/s privátky*, *% objednávek s privátkou*,
+  *Průměr. hodnota obj. bez/s privátky*, *Průměr. Marže/obj. bez/s privátky*, plus the
+  *… CELKEM* totals. (Private = full orders containing a private brand; "bez" = the rest.)
 - **Send test → its tab** writes the selected campaign; **Fill all tabs from this export**
   loops every tab's B1 id and fills them all. Percentages go in as fractions into
   percent-formatted cells; re-sending overwrites the data cells in place.

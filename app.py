@@ -992,6 +992,61 @@ def render_vwo_page() -> None:
 #   "Alensis" title → +1 date · +2 header · +3..+6 variants (B:K)
 GS_VARS = ("1", "2", "3", "4")  # variant ids → rows A, B, C, D
 
+# Alensis block is HEADER-DRIVEN: normalized header label → (vdf column, number format).
+# Add a column in the sheet with one of these labels and the app fills it; unknown
+# headers are left untouched. normalize_text() lowercases, strips accents & punctuation.
+ALENSIS_LABELS = {
+    "pocetzobrazeni": ("Visitors", "int"), "zobrazeni": ("Visitors", "int"),
+    "pocetkonverziobj": ("Orders", "int"), "konverzepocetobj": ("Orders", "int"),
+    "pomerkonverze": ("Conv. rate %", "pct"), "konverznipomer": ("Conv. rate %", "pct"),
+    "revenue": ("Revenue", "kc"), "revenuecelkem": ("Revenue", "kc"),
+    "prumhodnotaobj": ("Avg. Order Val.", "kc"), "revenueobj": ("Avg. Order Val.", "kc"),
+    "celkempocetstornoobj": ("Storno", "int"), "stornopocetobj": ("Storno", "int"),
+    "storno": ("% storno", "pct"), "stornopomer": ("% storno", "pct"),
+    "marze": ("Margin", "kc"), "prummarzeobj": ("Margin/obj", "kc"),
+    # private-brand split
+    "pocetobjednavekbezprivatky": ("orders_nonpriv", "int"),
+    "pocetobjednaveksprivatkou": ("orders_priv", "int"),
+    "objednaveksprivatkou": ("pct_priv", "pct"),
+    "prumerhodnotaobjbezprivatky": ("aov_nonpriv", "kc"),
+    "prumerhodnotaobjsprivatkou": ("aov_priv", "kc"),
+    "prumermarzeobjbezprivatky": ("marginobj_nonpriv", "kc"),
+    "prumermarzeobjsprivatkou": ("marginobj_priv", "kc"),
+    "prumerhodnotaobjcelkem": ("Avg. Order Val.", "kc"),
+    "prumermarzeobjcelkem": ("Margin/obj", "kc"),
+}
+
+
+def _col_letter(n: int) -> str:
+    """1-based column index → spreadsheet letter (1→A, 27→AA)."""
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _private_split_metrics(g: pd.DataFrame, use_gross: bool, profit_col: str | None) -> dict:
+    """Per-variant split of full orders into with/without a private brand (+ %, AOV, margin/obj)."""
+    out = {"orders_priv": 0, "orders_nonpriv": 0, "pct_priv": None,
+           "aov_priv": None, "aov_nonpriv": None,
+           "marginobj_priv": None, "marginobj_nonpriv": None}
+    if COL_ORDER not in g.columns or "_is_private" not in g.columns:
+        return out
+    priv_orders = set(g.loc[g["_is_private"], COL_ORDER])
+    is_priv = g[COL_ORDER].isin(priv_orders)
+    ep = eval_row(g[is_priv], use_gross, profit_col, True) if is_priv.any() else {}
+    en = eval_row(g[~is_priv], use_gross, profit_col, True) if (~is_priv).any() else {}
+    out["orders_priv"] = ep.get("Orders", 0)
+    out["orders_nonpriv"] = en.get("Orders", 0)
+    tot = out["orders_priv"] + out["orders_nonpriv"]
+    out["pct_priv"] = (out["orders_priv"] / tot) if tot else None
+    out["aov_priv"] = ep.get("Avg. Order Val.")
+    out["aov_nonpriv"] = en.get("Avg. Order Val.")
+    out["marginobj_priv"] = ep.get("Margin/obj")
+    out["marginobj_nonpriv"] = en.get("Margin/obj")
+    return out
+
 
 @st.cache_resource(show_spinner=False)
 def _gsheets_client():
@@ -1127,29 +1182,22 @@ def write_template_blocks(ws, eshop: str, vdf, vwo: dict) -> None:
             values.append({"range": f"B{d0 + 1}:G{d0 + 4}", "values": rows})
             fmts.append({"range": f"E{d0 + 1}:E{d0 + 4}", "format": pct})
 
-    # ---- Alensis block: B..K = Visitors, Orders, (blank), CR%, Revenue, AOV, Storno, %Storno, Margin, Margin/obj ----
+    # ---- Alensis block: header-driven — fill each column by matching its header label ----
     a0 = pos["alensis"]
     values += [{"range": f"A{a0 + 1}", "values": [[vwo.get("date", "")]]},
                {"range": f"A{a0 + 2}", "values": [[eshop]]}]
-    arows = []
-    for v in GS_VARS:
-        r = vmap.get(v)
-        if r is None:
-            arows.append([""] * 10)
+    fmt_obj = {"int": intf, "pct": pct, "kc": kc}
+    header = ws.row_values(a0 + 2)  # the template's labels are already there
+    for idx, label in enumerate(header, start=1):
+        spec = ALENSIS_LABELS.get(normalize_text(label))
+        if not spec:
             continue
-        gg = lambda c: _clean(r[c]) if c in vdf.columns else ""
-        arows.append([gg("Visitors"), gg("Orders"), "", gg("Conv. rate %"), gg("Revenue"),
-                      gg("Avg. Order Val."), gg("Storno"), gg("% storno"),
-                      gg("Margin"), gg("Margin/obj")])
-    values.append({"range": f"B{a0 + 3}:K{a0 + 6}", "values": arows})
-    fmts += [
-        {"range": f"B{a0 + 3}:C{a0 + 6}", "format": intf},
-        {"range": f"H{a0 + 3}:H{a0 + 6}", "format": intf},
-        {"range": f"E{a0 + 3}:E{a0 + 6}", "format": pct},
-        {"range": f"I{a0 + 3}:I{a0 + 6}", "format": pct},
-        {"range": f"F{a0 + 3}:G{a0 + 6}", "format": kc},
-        {"range": f"J{a0 + 3}:K{a0 + 6}", "format": kc},
-    ]
+        vcol, fmt = spec
+        col = _col_letter(idx)
+        colvals = [[_clean(vmap[v][vcol]) if (v in vmap and vcol in vdf.columns) else ""]
+                   for v in GS_VARS]
+        values.append({"range": f"{col}{a0 + 3}:{col}{a0 + 6}", "values": colvals})
+        fmts.append({"range": f"{col}{a0 + 3}:{col}{a0 + 6}", "format": fmt_obj[fmt]})
 
     ws.batch_update(values, value_input_option="USER_ENTERED")
     ws.batch_format(fmts)
@@ -1164,7 +1212,8 @@ def compute_variant_block(df: pd.DataFrame, test_id: str, use_gross: bool,
     w = w[w["_variant"].notna() & (w["_variant"] != "")]
     if w.empty:
         return None, {}
-    rows = [{"Variant": var, **eval_row(g, use_gross, profit_col, True)}
+    rows = [{"Variant": var, **eval_row(g, use_gross, profit_col, True),
+             **_private_split_metrics(g, use_gross, profit_col)}
             for var, g in w.groupby("_variant")]
     vdf = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
     var_names: dict[str, str] = {}
