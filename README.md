@@ -36,6 +36,10 @@ export, then copy or download clean figures for your master sheet.
     private brand** (whole basket, matching the department's "jen privátní čočky").
   - **Custom pivot** — group by any columns × metrics.
 - **Export:** every view has a Download CSV button (semicolon, UTF-8 BOM — Excel-friendly).
+- **Percentages are Sheets-friendly:** all `%` columns (% storno, Margin %, Conv. rate %,
+  Improvement %, …) are stored as **fractions** (e.g. `0.0459`) and only *displayed* as
+  `4.59%`. So when you copy a cell into Google Sheets and apply Percent formatting you get
+  `4.59%`, not `459%`. (Downloaded CSVs therefore also hold the fraction.)
 - **VWO visitors / conversion rate (optional):** if a VWO API token is configured in
   Streamlit secrets (`vwo_token`, plus `vwo_account_id`), the Per-variant table adds
   **Visitors** and **Conv. rate %** (orders ÷ visitors) for the selected test, pulled

@@ -109,7 +109,7 @@ def vwo_primary_improvement(data: dict) -> dict[str, float]:
         agg = vgd.get("aggregated", {})
         imp = agg.get("relativeImprovementRate") or agg.get("relativeExpectedImprovementRate")
         med = imp.get("median") if isinstance(imp, dict) else None
-        out[str(vgd.get("variation"))] = round(med * 100, 2) if med is not None else None
+        out[str(vgd.get("variation"))] = round(med, 6) if med is not None else None  # fraction
     return out
 
 
@@ -166,7 +166,7 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
                 rec["conversions"] = int(agg.get("conversionCount", 0))
                 ri = agg.get("relativeImprovementRate")
                 med = ri.get("median") if isinstance(ri, dict) else None
-                rec["improvement"] = round(med * 100, 2) if med is not None else None
+                rec["improvement"] = round(med, 6) if med is not None else None  # fraction
             if revenue_id is not None and g == str(revenue_id) and "totalRevenue" in agg:
                 rec["revenue"] = round(float(agg.get("totalRevenue", 0)), 2)
         return out or {"_error": "no segment data"}
@@ -185,7 +185,7 @@ def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
     def cr(seg, vid):
         s = seg.get(vid, {})
         vis = s.get("visitors", 0)
-        return (s.get("conversions", 0) / vis * 100) if vis else None
+        return (s.get("conversions", 0) / vis) if vis else None  # fraction
 
     rows = []
     for vid in vids:
@@ -196,11 +196,11 @@ def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
             "Variation": f"{vid} · {names.get(vid, '')}" + (" (ctrl)" if is_ctrl else ""),
             "Desktop vis": dv.get("visitors", 0),
             "Desktop conv": dv.get("conversions", 0),
-            "Desktop CR%": round(d_cr, 2) if d_cr is not None else None,
+            "Desktop CR%": round(d_cr, 6) if d_cr is not None else None,
             "Desktop Impr%": None if is_ctrl else dv.get("improvement"),
             "Mob+Tab vis": mv.get("visitors", 0),
             "Mob+Tab conv": mv.get("conversions", 0),
-            "Mob+Tab CR%": round(m_cr, 2) if m_cr is not None else None,
+            "Mob+Tab CR%": round(m_cr, 6) if m_cr is not None else None,
             "Mob+Tab Impr%": None if is_ctrl else mv.get("improvement"),
         })
     return pd.DataFrame(rows)
@@ -211,10 +211,10 @@ def device_styler(tbl: pd.DataFrame):
     num_cols = [c for c in tbl.columns if c != "Variation"]
 
     def fmt_for(c):
-        if "Impr" in c:
-            return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+        if "Impr" in c:  # stored as a fraction → render as signed percent
+            return lambda v: "" if pd.isna(v) else f"{v * 100:+.2f}%"
         if c.endswith("%"):
-            return lambda v: "" if pd.isna(v) else f"{v:.2f}%"
+            return lambda v: "" if pd.isna(v) else f"{v * 100:.2f}%"
         return lambda v: "" if pd.isna(v) else f"{int(v):,}"
 
     def highlight(col):
@@ -252,12 +252,12 @@ def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
     for vid in vids:
         s = seg.get(vid, {})
         vis, con = s.get("visitors", 0), s.get("conversions", 0)
-        cr = (con / vis * 100) if vis else None
+        cr = (con / vis) if vis else None  # fraction
         rev, is_ctrl = s.get("revenue"), vid in ctrl
         rows.append({
             "Variant": f"{vid} (ctrl)" if is_ctrl else vid,
             "Visitors": vis, "VWO conv.": con,
-            "Conv. rate %": round(cr, 2) if cr is not None else None,
+            "Conv. rate %": round(cr, 6) if cr is not None else None,
             "Improvement %": None if is_ctrl else s.get("improvement"),
             "VWO revenue": rev,
         })
@@ -267,7 +267,7 @@ def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
             tot_r += rev
             any_rev = True
     rows.append({"Variant": "TOTAL", "Visitors": tot_v, "VWO conv.": tot_c,
-                 "Conv. rate %": round(tot_c / tot_v * 100, 2) if tot_v else None,
+                 "Conv. rate %": round(tot_c / tot_v, 6) if tot_v else None,
                  "Improvement %": None, "VWO revenue": tot_r if any_rev else None})
     df = pd.DataFrame(rows)
     if not any_rev:
@@ -282,10 +282,10 @@ def device_variant_styler(tbl: pd.DataFrame):
     is_total = tbl["Variant"].astype(str).eq("TOTAL").to_numpy()
 
     def fmt_for(c):
-        if "Improvement" in c or "lift" in c:
-            return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+        if "Improvement" in c or "lift" in c:  # stored as a fraction → signed percent
+            return lambda v: "" if pd.isna(v) else f"{v * 100:+.2f}%"
         if c.endswith("%"):
-            return lambda v: "" if pd.isna(v) else f"{v:.2f}%"
+            return lambda v: "" if pd.isna(v) else f"{v * 100:.2f}%"
         if "revenue" in c:
             return lambda v: "" if pd.isna(v) else f"{v:,.0f}"  # VWO revenue currency varies per test
         return lambda v: "" if pd.isna(v) else f"{int(v):,}"
@@ -410,8 +410,8 @@ def vwo_styler(tbl: pd.DataFrame):
     num_cols = [c for c in tbl.columns if c != "Variation"]
 
     def fmt_for(c):
-        if c.endswith("%"):
-            return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+        if c.endswith("%"):  # exp.impr% stored as a fraction → render as signed percent
+            return lambda v: "" if pd.isna(v) else f"{v * 100:+.2f}%"
         if c.endswith("rev"):
             return lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč"
         return lambda v: "" if pd.isna(v) else f"{int(v):,}"
@@ -460,7 +460,7 @@ def vwo_all_goals_table(data: dict) -> pd.DataFrame:
                 agg2 = vgd.get((str(g.get("id")), vid), {})
                 imp = agg2.get("relativeImprovementRate") or agg2.get("relativeExpectedImprovementRate")
                 med = imp.get("median") if isinstance(imp, dict) else None
-                row[f"{gname} · exp.impr%"] = round(med * 100, 2) if med is not None else None
+                row[f"{gname} · exp.impr%"] = round(med, 6) if med is not None else None  # fraction
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -742,7 +742,7 @@ def metrics_for(df: pd.DataFrame, use_gross: bool, profit_col: str | None = None
         margin = float(df[profit_col].sum())
         m["Margin"] = round(margin, 2)
         m["Margin/obj"] = round(margin / orders, 2) if orders else 0.0
-        m["Margin %"] = round(margin / revenue * 100, 2) if revenue else 0.0
+        m["Margin %"] = round(margin / revenue, 6) if revenue else 0.0  # fraction
     m.update({
         "Quantity": round(qty, 2),
         "Line items": len(df),
@@ -758,9 +758,9 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         if c in MONEY_COLS:
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:,.2f} Kč"
         elif isinstance(c, str) and (c.endswith("Δ%") or c == "Improvement %"):
-            fmt[c] = lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+            fmt[c] = lambda v: "" if pd.isna(v) else f"{v * 100:+.2f}%"  # stored as fraction
         elif isinstance(c, str) and (c.startswith("%") or c.endswith("%")):
-            fmt[c] = lambda v: "" if pd.isna(v) else f"{v:.2f}%"
+            fmt[c] = lambda v: "" if pd.isna(v) else f"{v * 100:.2f}%"  # stored as fraction
         elif c == "VWO revenue":
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:,.0f}"
     return df.style.format(fmt)
@@ -792,14 +792,14 @@ def eval_row(g: pd.DataFrame, use_gross: bool, profit_col: str | None = None,
     row = {
         "Orders": orders,
         "Storno": storno,
-        "% storno": round(storno / orders * 100, 2) if orders else 0.0,
+        "% storno": round(storno / orders, 6) if orders else 0.0,  # fraction
         "Revenue": round(revenue, 2),
         "Avg. Order Val.": round(revenue / orders, 2) if orders else 0.0,
     }
     if has_profit:
         row["Margin"] = round(margin, 2)
         row["Margin/obj"] = round(margin / orders, 2) if orders else 0.0
-        row["Margin %"] = round(margin / revenue * 100, 2) if revenue else 0.0
+        row["Margin %"] = round(margin / revenue, 6) if revenue else 0.0  # fraction
     return row
 
 
@@ -1265,7 +1265,7 @@ def main() -> None:
                     return pd.to_numeric(vdf["Variant"].map(f), errors="coerce").astype("Int64")
                 vdf.insert(1, "Visitors", col("visitors"))
                 vdf.insert(2, "VWO conv.", col("conversions"))
-                vdf.insert(3, "Conv. rate %", (vdf["Orders"] / vdf["Visitors"] * 100).round(2))
+                vdf.insert(3, "Conv. rate %", (vdf["Orders"] / vdf["Visitors"]).round(6))  # fraction
                 impr = vwo_primary_improvement(data)
                 vdf.insert(4, "Improvement %",
                            vdf["Variant"].map(lambda v: impr.get(str(v))))  # control/TOTAL → blank
