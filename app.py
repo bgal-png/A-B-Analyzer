@@ -618,8 +618,12 @@ def render_vwo_page() -> None:
         st.info("Enter test IDs, or switch on **Browse by name** to pick from the list.")
         return
 
-    cols = st.columns(len(ids)) if len(ids) > 1 else [st]
+    # 2 campaigns → side by side; 3+ → stacked vertically (full width, more readable).
+    vertical = len(ids) > 2
+    cols = [st] * len(ids) if vertical else (st.columns(len(ids)) if len(ids) > 1 else [st])
     for cid, col in zip(ids, cols):
+        if vertical:
+            col.divider()
         data = fetch_vwo_campaign(str(acc), cid, token)
         if not data or data.get("_error"):
             col.warning(f"Campaign **{cid}**: {data.get('_error', 'no data') if data else 'no data'}")
