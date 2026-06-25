@@ -67,6 +67,22 @@ def vwo_primary_counts(data: dict) -> dict[str, dict]:
             for v, d in primary.get("aggregatedData", {}).items()}
 
 
+def vwo_primary_improvement(data: dict) -> dict[str, float]:
+    """{variation_id: expected improvement % vs control} from the primary goal (control → None)."""
+    goals = data.get("goals", [])
+    pid = next((g.get("id") for g in goals if g.get("isPrimary")),
+               goals[0].get("id") if goals else None)
+    out: dict[str, float] = {}
+    for vgd in data.get("variationGoalData", []):
+        if vgd.get("goal") != pid:
+            continue
+        agg = vgd.get("aggregated", {})
+        imp = agg.get("relativeImprovementRate") or agg.get("relativeExpectedImprovementRate")
+        med = imp.get("median") if isinstance(imp, dict) else None
+        out[str(vgd.get("variation"))] = round(med * 100, 2) if med is not None else None
+    return out
+
+
 def _extract_campaign_list(payload) -> list:
     """Find the first list of campaign-like dicts anywhere in the response."""
     from collections import deque
@@ -465,7 +481,7 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     for c in df.columns:
         if c in MONEY_COLS:
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:,.2f} Kč"
-        elif isinstance(c, str) and c.endswith("Δ%"):
+        elif isinstance(c, str) and (c.endswith("Δ%") or c == "Improvement %"):
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
         elif isinstance(c, str) and (c.startswith("%") or c.endswith("%")):
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:.2f}%"
@@ -898,10 +914,13 @@ def main() -> None:
                 vdf.insert(1, "Visitors", col("visitors"))
                 vdf.insert(2, "VWO conv.", col("conversions"))
                 vdf.insert(3, "Conv. rate %", (vdf["Orders"] / vdf["Visitors"] * 100).round(2))
-                vwo_cols = ["Visitors", "VWO conv.", "Conv. rate %"]
-                st.caption("🔵 tinted columns are from **VWO** (Visitors, VWO conv.); the rest is "
-                           "from the **sales export**. Conv. rate % = Orders ÷ Visitors. VWO counts "
-                           "are campaign-wide — don't filter by a single project when reading them.")
+                impr = vwo_primary_improvement(data)
+                vdf.insert(4, "Improvement %",
+                           vdf["Variant"].map(lambda v: impr.get(str(v))))  # control/TOTAL → blank
+                vwo_cols = ["Visitors", "VWO conv.", "Conv. rate %", "Improvement %"]
+                st.caption("🔵 tinted columns are from **VWO** (Visitors, VWO conv., Improvement % "
+                           "vs control); the rest is from the **sales export**. Conv. rate % = Orders ÷ "
+                           "Visitors. VWO counts are campaign-wide — don't filter by a single project.")
             else:
                 st.caption("⚠️ Couldn't fetch VWO data for this campaign (token/plan/campaign id).")
 
