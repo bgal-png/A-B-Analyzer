@@ -769,6 +769,15 @@ def main() -> None:
     if COL_FINAL in df.columns and sb.checkbox("Final orders only", value=False):
         work = work[work[COL_FINAL] == "1"]
 
+    # Showroom orders (paid via a Showroom payment method) — offer to exclude.
+    if "payment" in df.columns:
+        is_showroom = df["payment"].astype(str).str.contains("showroom", case=False, na=False)
+        if is_showroom.any():
+            n_sr = df.loc[is_showroom, COL_ORDER].nunique() if COL_ORDER in df.columns else int(is_showroom.sum())
+            if sb.checkbox(f"Exclude showroom orders ({n_sr:,})", value=False,
+                           help="Drops orders paid via a Showroom payment method."):
+                work = work[~work["payment"].astype(str).str.contains("showroom", case=False, na=False)]
+
     # Item type. Selection stored now and applied to work below. In Per-variant it
     # constrains revenue (via _is_product) but never the margin, which spans all lines.
     item_keep = None
