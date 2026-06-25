@@ -1,0 +1,3 @@
+[server]
+# Raise the upload limit (MB) above the 200 MB default for large exports.
+maxUploadSize = 1024
