@@ -673,6 +673,39 @@ def test_options(df: pd.DataFrame) -> list[str]:
     return sorted(seen, key=lambda x: (len(x), x))
 
 
+def build_test_labels(df: pd.DataFrame, tests: list[str], vwo_acc, vwo_token) -> dict[str, str]:
+    """Map each test id → 'id — eshop(s) · VWO name' so the Test selector is self-describing.
+
+    Eshop(s) come from the export's ref_projects; the test name from the VWO campaign
+    list (one cached call). Either part is omitted if unavailable.
+    """
+    # eshop domain(s) each test appears in (handles pipe-combined test ids per row)
+    test_projects: dict[str, set] = {}
+    if COL_TEST in df.columns and COL_PROJECT in df.columns:
+        for tname, proj in df[[COL_TEST, COL_PROJECT]].drop_duplicates().itertuples(index=False):
+            proj = str(proj).strip()
+            for tok in str(tname).split("|"):
+                tok = tok.strip()
+                if tok and proj:
+                    test_projects.setdefault(tok, set()).add(proj)
+    # VWO campaign names, keyed by campaign id (cached)
+    names: dict[str, str] = {}
+    if vwo_token:
+        for c in (fetch_vwo_campaign_list(str(vwo_acc), vwo_token) or []):
+            names[str(c.get("id"))] = c.get("name", "")
+    labels: dict[str, str] = {}
+    for t in tests:
+        bits = []
+        projs = test_projects.get(t)
+        if projs:
+            doms = sorted({PROJECT_NAMES.get(p, p) for p in projs})
+            bits.append(doms[0] if len(doms) == 1 else f"{len(doms)} eshops")
+        if names.get(t):
+            bits.append(names[t])
+        labels[t] = f"{t} — " + " · ".join(bits) if bits else t
+    return labels
+
+
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
@@ -1013,8 +1046,15 @@ def main() -> None:
                               "FIFO = sell − accounting FIFO price. Taken from the file as-is (CZK).")
         profit_col = available[basis]
 
+    try:
+        vwo_token, vwo_acc = st.secrets.get("vwo_token"), st.secrets.get("vwo_account_id", "717496")
+    except Exception:
+        vwo_token, vwo_acc = None, "717496"
+
     tests = test_options(df)
-    test_choice = sb.selectbox("Test", [NO_TEST] + tests)
+    test_labels = build_test_labels(df, tests, vwo_acc, vwo_token)
+    test_choice = sb.selectbox("Test", [NO_TEST] + tests,
+                               format_func=lambda t: test_labels.get(t, t))
     selected_test = None if test_choice == NO_TEST else test_choice
 
     work = df.copy()
@@ -1049,10 +1089,6 @@ def main() -> None:
         work = work[mask]
 
     # Restrict to the days the VWO test actually ran (excludes paused / out-of-quota gaps).
-    try:
-        vwo_token, vwo_acc = st.secrets.get("vwo_token"), st.secrets.get("vwo_account_id", "717496")
-    except Exception:
-        vwo_token, vwo_acc = None, "717496"
     if vwo_token and selected_test and "_order_dt" in work.columns:
         if sb.checkbox("Only dates the test was running (VWO)", value=False,
                        help="Keep only orders from days the VWO test collected traffic — "
