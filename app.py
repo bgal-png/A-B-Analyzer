@@ -984,13 +984,13 @@ def render_vwo_page() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Google Sheets export — fill the "Pro porovnání z Analyzeru (BG)" block per eshop tab
+# Google Sheets export — fill the per-eshop template tab (VWO + device + Alensis)
 # --------------------------------------------------------------------------- #
-# Columns mirror the manual block (D left blank to align with the VWO/Alensis blocks).
-GS_HEADER_LABELS = ["Počet zobrazení", "Počet konverzí (obj.)", "", "% poměr Konverze",
-                    "Revenue", "Prům. hodnota /obj.", "Celkem počet Storno obj.", "% Storno",
-                    "Marže", "Prům marže /obj."]
-GS_VARIANT_LETTERS = {"1": "A", "2": "B", "3": "C", "4": "D"}
+# Layout (from the TEMPLATE tab): merged section titles in column A locate each block.
+#   "VWO"   title → +1 date · +2 header(eshop) · +3..+6 variants (B:G)
+#   "Desktop"/"Mobile" title → +1..+4 variants (B:G)
+#   "Alensis" title → +1 date · +2 header · +3..+6 variants (B:K)
+GS_VARS = ("1", "2", "3", "4")  # variant ids → rows A, B, C, D
 
 
 @st.cache_resource(show_spinner=False)
@@ -1057,64 +1057,102 @@ def campaign_tab_map(sh) -> dict[str, object]:
     return out
 
 
-def _analyzer_rows(vdf: pd.DataFrame, var_names: dict[str, str]) -> list[list]:
-    """Per-variant df → block rows [label, vis, orders, '', cr, rev, aov, storno, %storno, margin, margin/obj].
+def _clean(x):
+    """Sheet-safe scalar: None/NaN → '' so empty cells clear instead of writing 'nan'."""
+    if x is None:
+        return ""
+    try:
+        if pd.isna(x):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return x
 
-    Percentages stay fractions (sheet cells are percent-formatted). Skips the TOTAL row.
+
+def _find_template_anchors(ws) -> dict[str, int]:
+    """Row numbers of the merged section titles in column A: vwo / alensis / desktop / mobile."""
+    pos: dict[str, int] = {}
+    for i, v in enumerate(ws.col_values(1), 1):
+        lv = (v or "").strip().lower()
+        if lv == "vwo":
+            pos.setdefault("vwo", i)
+        elif lv == "alensis":
+            pos.setdefault("alensis", i)
+        elif lv == "desktop":
+            pos.setdefault("desktop", i)
+        elif lv.startswith("mobile"):
+            pos.setdefault("mobile", i)
+    return pos
+
+
+def write_template_blocks(ws, eshop: str, vdf, vwo: dict) -> None:
+    """Fill the VWO block (+ Desktop/Mobile) and the Alensis block on a template tab.
+
+    Locates each block by its merged title (column A). Writes only the data grids
+    (single cells) — never the merged titles/headers. Percentages go in as fractions;
+    Alensis money is CZK; VWO money keeps the tab's own (as-is) cell format.
     """
-    def g(r, col):
-        return r[col] if (col in vdf.columns and pd.notna(r[col])) else ""
+    pos = _find_template_anchors(ws)
+    if "vwo" not in pos or "alensis" not in pos:
+        raise RuntimeError("Template anchors not found — the tab needs merged 'VWO' and "
+                           "'Alensis' titles in column A (build it from the TEMPLATE tab).")
+    vmap = {str(r["Variant"]): r for _, r in vdf.iterrows()} if vdf is not None else {}
+    values, fmts = [], []
+    pct = {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}}
+    kc = {"numberFormat": {"type": "NUMBER", "pattern": '#,##0.00" Kč"'}}
+    intf = {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}}
 
-    rows = []
-    for _, r in vdf.iterrows():
-        v = str(r["Variant"])
-        if v not in GS_VARIANT_LETTERS:
+    # ---- VWO block: B..G = Visitors, Conv, Improvement, CR%, Revenue, Avg/obj ----
+    v0 = pos["vwo"]
+    values += [{"range": f"A{v0 + 1}", "values": [[vwo.get("date", "")]]},
+               {"range": f"A{v0 + 2}", "values": [[eshop]]}]
+    main = []
+    for v in GS_VARS:
+        m = vwo.get("main", {}).get(v, {})
+        d = "Baseline" if v == "1" else _clean(m.get("impr"))
+        main.append([_clean(m.get("vis")), _clean(m.get("conv")), d,
+                     _clean(m.get("cr")), _clean(m.get("rev")), _clean(m.get("avg"))])
+    values.append({"range": f"B{v0 + 3}:G{v0 + 6}", "values": main})
+    fmts.append({"range": f"D{v0 + 3}:E{v0 + 6}", "format": pct})  # Improvement + CR (VWO money as-is)
+
+    # ---- Desktop / Mobile sub-blocks: B..G (no Improvement column) ----
+    for key in ("desktop", "mobile"):
+        if key in pos:
+            d0 = pos[key]
+            rows = []
+            for v in GS_VARS:
+                m = vwo.get(key, {}).get(v, {})
+                rows.append([_clean(m.get("vis")), _clean(m.get("conv")), "",
+                             _clean(m.get("cr")), _clean(m.get("rev")), _clean(m.get("avg"))])
+            values.append({"range": f"B{d0 + 1}:G{d0 + 4}", "values": rows})
+            fmts.append({"range": f"E{d0 + 1}:E{d0 + 4}", "format": pct})
+
+    # ---- Alensis block: B..K = Visitors, Orders, (blank), CR%, Revenue, AOV, Storno, %Storno, Margin, Margin/obj ----
+    a0 = pos["alensis"]
+    values += [{"range": f"A{a0 + 1}", "values": [[vwo.get("date", "")]]},
+               {"range": f"A{a0 + 2}", "values": [[eshop]]}]
+    arows = []
+    for v in GS_VARS:
+        r = vmap.get(v)
+        if r is None:
+            arows.append([""] * 10)
             continue
-        letter = GS_VARIANT_LETTERS[v]
-        nm = var_names.get(v, "")
-        rows.append([f"{letter} ({nm})" if nm else letter,
-                     g(r, "Visitors"), g(r, "Orders"), "", g(r, "Conv. rate %"),
-                     g(r, "Revenue"), g(r, "Avg. Order Val."), g(r, "Storno"),
-                     g(r, "% storno"), g(r, "Margin"), g(r, "Margin/obj")])
-    rows.sort(key=lambda x: x[0][:1])  # A, B, C, D
-    return rows
+        gg = lambda c: _clean(r[c]) if c in vdf.columns else ""
+        arows.append([gg("Visitors"), gg("Orders"), "", gg("Conv. rate %"), gg("Revenue"),
+                      gg("Avg. Order Val."), gg("Storno"), gg("% storno"),
+                      gg("Margin"), gg("Margin/obj")])
+    values.append({"range": f"B{a0 + 3}:K{a0 + 6}", "values": arows})
+    fmts += [
+        {"range": f"B{a0 + 3}:C{a0 + 6}", "format": intf},
+        {"range": f"H{a0 + 3}:H{a0 + 6}", "format": intf},
+        {"range": f"E{a0 + 3}:E{a0 + 6}", "format": pct},
+        {"range": f"I{a0 + 3}:I{a0 + 6}", "format": pct},
+        {"range": f"F{a0 + 3}:G{a0 + 6}", "format": kc},
+        {"range": f"J{a0 + 3}:K{a0 + 6}", "format": kc},
+    ]
 
-
-def _find_analyzer_anchor(ws) -> int:
-    """Row of the existing 'Analyzeru' block title, or two rows below the last content."""
-    col_a = ws.col_values(1)
-    for i, v in enumerate(col_a, 1):
-        if v and "analyzer" in v.lower():
-            return i
-    return len(col_a) + 2
-
-
-def write_analyzer_block(ws, eshop_name: str, rows: list[list]) -> int:
-    """Write title + header + variant rows at the analyzer anchor, with number formats.
-
-    Returns the anchor row written to. Overwrites an existing block in place.
-    """
-    anchor = _find_analyzer_anchor(ws)
-    width = len(GS_HEADER_LABELS) + 1  # label column + metrics
-    matrix = [["Pro porovnání z Analyzeru (BG)"] + [""] * (width - 1),
-              [eshop_name] + GS_HEADER_LABELS,
-              *[(r + [""] * width)[:width] for r in rows]]
-    ws.update(range_name=f"A{anchor}", values=matrix, value_input_option="USER_ENTERED")
-    r0 = anchor + 2
-    r1 = r0 + len(rows) - 1
-    kc = {"type": "NUMBER", "pattern": '#,##0.00" Kč"'}
-    pct = {"type": "PERCENT", "pattern": "0.00%"}
-    intf = {"type": "NUMBER", "pattern": "#,##0"}
-    ws.batch_format([
-        {"range": f"A{anchor + 1}:K{anchor + 1}", "format": {"textFormat": {"bold": True}}},
-        {"range": f"B{r0}:C{r1}", "format": {"numberFormat": intf}},
-        {"range": f"H{r0}:H{r1}", "format": {"numberFormat": intf}},
-        {"range": f"E{r0}:E{r1}", "format": {"numberFormat": pct}},
-        {"range": f"I{r0}:I{r1}", "format": {"numberFormat": pct}},
-        {"range": f"F{r0}:G{r1}", "format": {"numberFormat": kc}},
-        {"range": f"J{r0}:K{r1}", "format": {"numberFormat": kc}},
-    ])
-    return anchor
+    ws.batch_update(values, value_input_option="USER_ENTERED")
+    ws.batch_format(fmts)
 
 
 def compute_variant_block(df: pd.DataFrame, test_id: str, use_gross: bool,
@@ -1141,6 +1179,52 @@ def compute_variant_block(df: pd.DataFrame, test_id: str, use_gross: bool,
             vdf["Conv. rate %"] = cr.where(vis.notna() & (vis != 0)).round(6)  # fraction; ∞/NaN→NA
             var_names = {str(x["id"]): x.get("name", "") for x in data.get("variations", [])}
     return vdf, var_names
+
+
+def compute_template_data(df: pd.DataFrame, test_id: str, use_gross: bool,
+                          profit_col: str | None, vwo_acc, vwo_token):
+    """Everything to fill a template tab for one test: (alensis vdf, VWO dict).
+
+    VWO dict: {date, main, desktop, mobile} where each variant maps to
+    {vis, conv, impr, cr, rev, avg} (fractions for cr/impr; rev as VWO returns it).
+    """
+    vdf, _ = compute_variant_block(df, test_id, use_gross, profit_col, vwo_acc, vwo_token)
+    vwo = {"date": "", "main": {}, "desktop": {}, "mobile": {}}
+    if not vwo_token:
+        return vdf, vwo
+    data = fetch_vwo_campaign(str(vwo_acc), str(test_id), vwo_token)
+    if not data or data.get("_error"):
+        return vdf, vwo
+    counts = vwo_primary_counts(data)
+    impr = vwo_primary_improvement(data)
+    revv = vwo_revenue_value(data)
+    for v in GS_VARS:
+        c = counts.get(v, {})
+        vis, conv, rev = c.get("visitors"), c.get("conversions"), revv.get(v)
+        vwo["main"][v] = {"vis": vis, "conv": conv, "impr": impr.get(v),
+                          "cr": (conv / vis) if vis else None,
+                          "rev": rev, "avg": (rev / conv) if (rev is not None and conv) else None}
+    dr = data.get("dataIntervalRange", {})
+    s = dr.get("limitingStartTime") or dr.get("startTime")
+    e = dr.get("limitingEndTime") or dr.get("endTime")
+    if s:
+        running = str(data.get("status", "")).upper() == "RUNNING"
+        vwo["date"] = f"{fmt_date(s)} - {fmt_date(time.time()) if running else fmt_date(e)}"
+    pid = vwo_primary_goal_id(data)
+    goals = data.get("goals", [])
+    gids = tuple(str(g.get("id")) for g in goals if g.get("id") is not None)
+    rid = next((g.get("id") for g in goals if g.get("type") == "revenue"), None)
+    if pid and s and e:
+        for key, devs in (("desktop", ("desktop",)), ("mobile", ("mobile", "tablet"))):
+            seg = fetch_vwo_segment(str(vwo_acc), str(test_id), vwo_token, devs, gids, pid, rid, s, e)
+            if isinstance(seg, dict) and not seg.get("_error"):
+                for v in GS_VARS:
+                    sd = seg.get(v, {})
+                    vis, conv, rev = sd.get("visitors"), sd.get("conversions"), sd.get("revenue")
+                    vwo[key][v] = {"vis": vis, "conv": conv,
+                                   "cr": (conv / vis) if vis else None, "rev": rev,
+                                   "avg": (rev / conv) if (rev is not None and conv) else None}
+    return vdf, vwo
 
 
 def disable_clear_cache_shortcut() -> None:
@@ -1471,11 +1555,6 @@ def main() -> None:
                     st.caption("✍️ The app writes as the address below — it must be an **Editor** on "
                                "the spreadsheet (Share → add as Editor):")
                     st.code(gsa_email(), language=None)
-                vnames: dict[str, str] = {}
-                if gsheets_ready() and vwo_token:
-                    d0 = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
-                    if d0 and not d0.get("_error"):
-                        vnames = {str(x["id"]): x.get("name", "") for x in d0.get("variations", [])}
                 c1, c2 = st.columns(2) if gsheets_ready() else (None, None)
                 if gsheets_ready() and c1.button(f"Send test {selected_test} → its tab", use_container_width=True):
                     try:
@@ -1484,9 +1563,10 @@ def main() -> None:
                         if ws is None:
                             st.error(f"No tab references campaign {selected_test} in its B1 link.")
                         else:
-                            rows = _analyzer_rows(vdf, vnames)
-                            write_analyzer_block(ws, ws.title, rows)
-                            st.success(f"Wrote {len(rows)} variants to “{ws.title}”.")
+                            tvdf, tvwo = compute_template_data(df, selected_test, use_gross,
+                                                               profit_col, acc, vwo_token)
+                            write_template_blocks(ws, ws.title, tvdf, tvwo)
+                            st.success(f"Filled VWO + Alensis blocks on “{ws.title}”.")
                     except Exception as e:  # noqa: BLE001
                         show_gsheets_error(e)
                 if gsheets_ready() and c2.button("Fill all tabs from this export", use_container_width=True):
@@ -1498,24 +1578,27 @@ def main() -> None:
                         else:
                             done, skipped = [], []
                             for cid, ws in tabs.items():
-                                bvdf, vnm = compute_variant_block(df, cid, use_gross,
-                                                                  profit_col, acc, vwo_token)
-                                if bvdf is None or bvdf.empty:
+                                tvdf, tvwo = compute_template_data(df, cid, use_gross,
+                                                                   profit_col, acc, vwo_token)
+                                if tvdf is None or tvdf.empty:
                                     skipped.append(f"{ws.title} ({cid})")
                                     continue
-                                write_analyzer_block(ws, ws.title, _analyzer_rows(bvdf, vnm))
-                                done.append(ws.title)
+                                try:
+                                    write_template_blocks(ws, ws.title, tvdf, tvwo)
+                                    done.append(ws.title)
+                                except Exception as we:  # noqa: BLE001
+                                    skipped.append(f"{ws.title} ({we})")
                             st.success(f"Filled {len(done)} tab(s): {', '.join(done) or '—'}")
                             if skipped:
-                                st.caption("Skipped (campaign not in this export): " + "; ".join(skipped))
+                                st.caption("Skipped: " + "; ".join(skipped))
                     except Exception as e:  # noqa: BLE001
                         show_gsheets_error(e)
                 if gsheets_ready():
-                    st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link. "
-                               "**Send** uses the current per-variant view (respects your filters); "
-                               "**Fill all** uses each campaign's full data from the export. Money is "
-                               "written in CZK as in the export; percentages go in as fractions into "
-                               "percent-formatted cells. Re-sending overwrites the block in place.")
+                    st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link, and "
+                               "blocks by their merged **VWO**/**Desktop**/**Mobile**/**Alensis** titles. "
+                               "Both buttons write each campaign's full data (VWO block + device split "
+                               "from VWO, Alensis block from the sales export in CZK). Re-sending "
+                               "overwrites the data cells in place.")
 
         # Two VWO-only device tables (mobile+tablet, desktop) under the main per-variant table.
         if vwo_token and selected_test:

@@ -74,18 +74,24 @@ vwo_account_id = "717496"
 
 ### Send to Google Sheets (finalization)
 
-The Per-variant view has a **📤 Send to Google Sheets** panel that writes the analyzer
-numbers into your finalization spreadsheet's **"Pro porovnání z Analyzeru (BG)"** block
-(the comparison-with-department block) — one per eshop tab.
+The Per-variant view has a **📤 Send to Google Sheets** panel that fills your per-eshop
+finalization tabs (built from the `TEMPLATE` tab) with two blocks:
 
-- **Routing:** each eshop tab declares its VWO campaign id in cell **B1** (the `.../ab/<id>/`
-  link). The app matches the selected test id to that tab — no domain guessing.
-- **Send test → its tab:** writes the current per-variant view to the matching tab.
-- **Fill all tabs from this export:** loops every tab's B1 id, computes that campaign's
-  per-variant numbers from the loaded export, and writes them all.
-- Columns written: Zobrazení (Visitors), Konverzí obj. (Orders), % Konverze, Revenue,
-  Prům./obj. (AOV), Storno, % Storno, Marže, Prům. marže/obj. — money in CZK, percentages
-  as fractions into percent-formatted cells. Re-sending overwrites the block in place.
+- **VWO block** (+ **Desktop** / **Mobile** sub-blocks): Visitors, Conversions, Improvement,
+  CR%, Revenue, Avg/obj — all from the VWO API, including the device split. VWO money is
+  written as-is (the tab's own currency format is kept).
+- **Alensis block:** Visitors, Orders, % Konverze, Revenue, Prům./obj., Storno, % Storno,
+  Marže, Prům. marže/obj. — from the sales export, **in CZK**.
+
+How it finds where to write:
+- **Tab routing:** each eshop tab declares its VWO campaign id in cell **B1** (the
+  `.../ab/<id>/` link). The app matches the selected test id to that tab.
+- **Block anchoring:** each block is located by its merged section title in column A
+  (`VWO`, `Desktop`, `Mobile`, `Alensis`). Only the single-cell data grids are written —
+  merged titles/headers are never touched.
+- **Send test → its tab** writes the selected campaign; **Fill all tabs from this export**
+  loops every tab's B1 id and fills them all. Percentages go in as fractions into
+  percent-formatted cells; re-sending overwrites the data cells in place.
 
 **Setup:** a Google **service account** with the Sheets API enabled; share the spreadsheet
 with its email (Editor); put the key + spreadsheet id in secrets:
