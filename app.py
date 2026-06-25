@@ -83,6 +83,15 @@ def vwo_primary_improvement(data: dict) -> dict[str, float]:
     return out
 
 
+def vwo_revenue_value(data: dict) -> dict[str, float]:
+    """{variation_id: VWO-tracked total revenue} from the revenue goal."""
+    rgoal = next((g for g in data.get("goals", []) if g.get("type") == "revenue"), None)
+    if not rgoal:
+        return {}
+    return {str(v): round(float(d.get("totalRevenue", 0)), 2)
+            for v, d in rgoal.get("aggregatedData", {}).items() if "totalRevenue" in d}
+
+
 def _extract_campaign_list(payload) -> list:
     """Find the first list of campaign-like dicts anywhere in the response."""
     from collections import deque
@@ -485,6 +494,8 @@ def style_money(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
         elif isinstance(c, str) and (c.startswith("%") or c.endswith("%")):
             fmt[c] = lambda v: "" if pd.isna(v) else f"{v:.2f}%"
+        elif c == "VWO revenue":
+            fmt[c] = lambda v: "" if pd.isna(v) else f"{v:,.0f}"
     return df.style.format(fmt)
 
 
@@ -918,9 +929,15 @@ def main() -> None:
                 vdf.insert(4, "Improvement %",
                            vdf["Variant"].map(lambda v: impr.get(str(v))))  # control/TOTAL → blank
                 vwo_cols = ["Visitors", "VWO conv.", "Conv. rate %", "Improvement %"]
-                st.caption("🔵 tinted columns are from **VWO** (Visitors, VWO conv., Improvement % "
-                           "vs control); the rest is from the **sales export**. Conv. rate % = Orders ÷ "
-                           "Visitors. VWO counts are campaign-wide — don't filter by a single project.")
+                rev = vwo_revenue_value(data)
+                if rev:
+                    vdf.insert(5, "VWO revenue", pd.to_numeric(
+                        vdf["Variant"].map(lambda v: sum(rev.values()) if v == "TOTAL" else rev.get(str(v))),
+                        errors="coerce"))
+                    vwo_cols.append("VWO revenue")
+                st.caption("🔵 tinted columns are from **VWO** (Visitors, VWO conv., Improvement % vs "
+                           "control, VWO revenue); the rest is from the **sales export**. Conv. rate % = "
+                           "Orders ÷ Visitors. VWO counts are campaign-wide — don't filter by a single project.")
             else:
                 st.caption("⚠️ Couldn't fetch VWO data for this campaign (token/plan/campaign id).")
 
