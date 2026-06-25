@@ -1184,19 +1184,32 @@ def _clean(x):
 
 
 def _find_template_anchors(ws) -> dict[str, int]:
-    """Row numbers of the merged section titles in column A: vwo / alensis / desktop / mobile."""
+    """Row numbers of the template's merged section titles in column A.
+
+    Robust to extra/pre-existing "VWO" blocks on the tab: the template VWO title is the
+    one immediately followed (within a few rows) by the Desktop sub-block — not just the
+    first "VWO" found. Desktop/Mobile/Alensis are then located after that VWO row.
+    """
+    col = [(c or "").strip().lower() for c in ws.col_values(1)]
+    n = len(col)
+    at = lambda i: col[i - 1] if 1 <= i <= n else ""
+
+    vwo = next((i for i, lv in enumerate(col, 1)
+                if lv == "vwo" and any(at(j) == "desktop" for j in range(i + 5, i + 11))), None)
     pos: dict[str, int] = {}
-    for i, v in enumerate(ws.col_values(1), 1):
-        lv = (v or "").strip().lower()
-        if lv == "vwo":
-            pos.setdefault("vwo", i)
-        elif lv == "alensis":
-            pos.setdefault("alensis", i)
-        elif lv == "desktop":
-            pos.setdefault("desktop", i)
-        elif lv.startswith("mobile"):
-            pos.setdefault("mobile", i)
-    return pos
+    if vwo is None:  # fallback: first occurrence of each title
+        for i, lv in enumerate(col, 1):
+            key = ("vwo" if lv == "vwo" else "desktop" if lv == "desktop"
+                   else "mobile" if lv.startswith("mobile") else "alensis" if lv == "alensis" else None)
+            if key:
+                pos.setdefault(key, i)
+        return pos
+    pos["vwo"] = vwo
+    for key, test in (("desktop", lambda x: x == "desktop"),
+                      ("mobile", lambda x: x.startswith("mobile")),
+                      ("alensis", lambda x: x == "alensis")):
+        pos[key] = next((j for j in range(vwo + 1, n + 1) if test(at(j))), None)
+    return {k: v for k, v in pos.items() if v is not None}
 
 
 def write_template_blocks(ws, eshop: str, vdf, vwo: dict) -> None:
