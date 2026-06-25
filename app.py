@@ -983,6 +983,143 @@ def render_vwo_page() -> None:
                     f"- {fmt_date(p['start'])} → {fmt_date(p['end'])}  ·  {p['days']} d" for p in periods))
 
 
+# --------------------------------------------------------------------------- #
+# Google Sheets export — fill the "Pro porovnání z Analyzeru (BG)" block per eshop tab
+# --------------------------------------------------------------------------- #
+# Columns mirror the manual block (D left blank to align with the VWO/Alensis blocks).
+GS_HEADER_LABELS = ["Počet zobrazení", "Počet konverzí (obj.)", "", "% poměr Konverze",
+                    "Revenue", "Prům. hodnota /obj.", "Celkem počet Storno obj.", "% Storno",
+                    "Marže", "Prům marže /obj."]
+GS_VARIANT_LETTERS = {"1": "A", "2": "B", "3": "C", "4": "D"}
+
+
+@st.cache_resource(show_spinner=False)
+def _gsheets_client():
+    """Authorised gspread client from the service-account secret (None if not configured)."""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        info = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+
+def gsheets_ready() -> bool:
+    try:
+        return ("gcp_service_account" in st.secrets) and _gsheets_client() is not None
+    except Exception:
+        return False
+
+
+def _open_spreadsheet(client, id_or_url: str):
+    """Open by spreadsheet id or a full edit URL."""
+    m = re.search(r"/d/([A-Za-z0-9_-]+)", id_or_url or "")
+    return client.open_by_key(m.group(1) if m else id_or_url)
+
+
+def campaign_tab_map(sh) -> dict[str, object]:
+    """{campaign_id: worksheet} read from each tab's B1 VWO link (e.g. .../ab/234/...)."""
+    out: dict[str, object] = {}
+    for ws in sh.worksheets():
+        try:
+            b1 = ws.acell("B1").value or ""
+        except Exception:
+            b1 = ""
+        m = re.search(r"/ab/(\d+)", b1)
+        if m:
+            out[m.group(1)] = ws
+    return out
+
+
+def _analyzer_rows(vdf: pd.DataFrame, var_names: dict[str, str]) -> list[list]:
+    """Per-variant df → block rows [label, vis, orders, '', cr, rev, aov, storno, %storno, margin, margin/obj].
+
+    Percentages stay fractions (sheet cells are percent-formatted). Skips the TOTAL row.
+    """
+    def g(r, col):
+        return r[col] if (col in vdf.columns and pd.notna(r[col])) else ""
+
+    rows = []
+    for _, r in vdf.iterrows():
+        v = str(r["Variant"])
+        if v not in GS_VARIANT_LETTERS:
+            continue
+        letter = GS_VARIANT_LETTERS[v]
+        nm = var_names.get(v, "")
+        rows.append([f"{letter} ({nm})" if nm else letter,
+                     g(r, "Visitors"), g(r, "Orders"), "", g(r, "Conv. rate %"),
+                     g(r, "Revenue"), g(r, "Avg. Order Val."), g(r, "Storno"),
+                     g(r, "% storno"), g(r, "Margin"), g(r, "Margin/obj")])
+    rows.sort(key=lambda x: x[0][:1])  # A, B, C, D
+    return rows
+
+
+def _find_analyzer_anchor(ws) -> int:
+    """Row of the existing 'Analyzeru' block title, or two rows below the last content."""
+    col_a = ws.col_values(1)
+    for i, v in enumerate(col_a, 1):
+        if v and "analyzer" in v.lower():
+            return i
+    return len(col_a) + 2
+
+
+def write_analyzer_block(ws, eshop_name: str, rows: list[list]) -> int:
+    """Write title + header + variant rows at the analyzer anchor, with number formats.
+
+    Returns the anchor row written to. Overwrites an existing block in place.
+    """
+    anchor = _find_analyzer_anchor(ws)
+    width = len(GS_HEADER_LABELS) + 1  # label column + metrics
+    matrix = [["Pro porovnání z Analyzeru (BG)"] + [""] * (width - 1),
+              [eshop_name] + GS_HEADER_LABELS,
+              *[(r + [""] * width)[:width] for r in rows]]
+    ws.update(range_name=f"A{anchor}", values=matrix, value_input_option="USER_ENTERED")
+    r0 = anchor + 2
+    r1 = r0 + len(rows) - 1
+    kc = {"type": "NUMBER", "pattern": '#,##0.00" Kč"'}
+    pct = {"type": "PERCENT", "pattern": "0.00%"}
+    intf = {"type": "NUMBER", "pattern": "#,##0"}
+    ws.batch_format([
+        {"range": f"A{anchor + 1}:K{anchor + 1}", "format": {"textFormat": {"bold": True}}},
+        {"range": f"B{r0}:C{r1}", "format": {"numberFormat": intf}},
+        {"range": f"H{r0}:H{r1}", "format": {"numberFormat": intf}},
+        {"range": f"E{r0}:E{r1}", "format": {"numberFormat": pct}},
+        {"range": f"I{r0}:I{r1}", "format": {"numberFormat": pct}},
+        {"range": f"F{r0}:G{r1}", "format": {"numberFormat": kc}},
+        {"range": f"J{r0}:K{r1}", "format": {"numberFormat": kc}},
+    ])
+    return anchor
+
+
+def compute_variant_block(df: pd.DataFrame, test_id: str, use_gross: bool,
+                          profit_col: str | None, vwo_acc, vwo_token):
+    """Per-variant df + VWO variation names for one test id (no extra filters). For fill-all."""
+    w = df.copy()
+    w["_variant"] = [variant_in_test(n, v, str(test_id))
+                     for n, v in zip(w[COL_TEST].astype(str), w[COL_VARIANT].astype(str))]
+    w = w[w["_variant"].notna() & (w["_variant"] != "")]
+    if w.empty:
+        return None, {}
+    rows = [{"Variant": var, **eval_row(g, use_gross, profit_col, True)}
+            for var, g in w.groupby("_variant")]
+    vdf = pd.DataFrame(rows).sort_values("Variant").reset_index(drop=True)
+    var_names: dict[str, str] = {}
+    if vwo_token:
+        data = fetch_vwo_campaign(str(vwo_acc), str(test_id), vwo_token)
+        if data and not data.get("_error"):
+            counts = vwo_primary_counts(data)
+            vis = pd.to_numeric(vdf["Variant"].map(lambda v: counts.get(str(v), {}).get("visitors")),
+                                errors="coerce")
+            vdf["Visitors"] = vis.astype("Int64")
+            cr = vdf["Orders"] / vis
+            vdf["Conv. rate %"] = cr.where(vis.notna() & (vis != 0)).round(6)  # fraction; ∞/NaN→NA
+            var_names = {str(x["id"]): x.get("name", "") for x in data.get("variations", [])}
+    return vdf, var_names
+
+
 def disable_clear_cache_shortcut() -> None:
     """Disable Streamlit's bare-'c' "Clear cache" hotkey.
 
@@ -1288,6 +1425,61 @@ def main() -> None:
                                            **{"background-color": "rgba(70,130,255,0.13)"})
         st.dataframe(styler, use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
+
+        # 📤 Push the per-variant numbers into the finalization Google Sheet's
+        # "Pro porovnání z Analyzeru (BG)" block (routed by each tab's B1 campaign link).
+        if selected_test and gsheets_ready():
+            with st.expander("📤 Send to Google Sheets (Analyzer comparison block)"):
+                default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
+                sid = st.text_input("Target spreadsheet (id or URL)", value=default_sid,
+                                    help="Finalization spreadsheet; defaults to the one in secrets.")
+                vnames: dict[str, str] = {}
+                if vwo_token:
+                    d0 = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
+                    if d0 and not d0.get("_error"):
+                        vnames = {str(x["id"]): x.get("name", "") for x in d0.get("variations", [])}
+                c1, c2 = st.columns(2)
+                if c1.button(f"Send test {selected_test} → its tab", use_container_width=True):
+                    try:
+                        sh = _open_spreadsheet(_gsheets_client(), sid)
+                        ws = campaign_tab_map(sh).get(str(selected_test))
+                        if ws is None:
+                            st.error(f"No tab references campaign {selected_test} in its B1 link.")
+                        else:
+                            rows = _analyzer_rows(vdf, vnames)
+                            write_analyzer_block(ws, ws.title, rows)
+                            st.success(f"Wrote {len(rows)} variants to “{ws.title}”.")
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"Failed: {type(e).__name__}: {e}")
+                if c2.button("Fill all tabs from this export", use_container_width=True):
+                    try:
+                        sh = _open_spreadsheet(_gsheets_client(), sid)
+                        tabs = campaign_tab_map(sh)
+                        if not tabs:
+                            st.warning("No tabs with a VWO campaign link in B1.")
+                        else:
+                            done, skipped = [], []
+                            for cid, ws in tabs.items():
+                                bvdf, vnm = compute_variant_block(df, cid, use_gross,
+                                                                  profit_col, acc, vwo_token)
+                                if bvdf is None or bvdf.empty:
+                                    skipped.append(f"{ws.title} ({cid})")
+                                    continue
+                                write_analyzer_block(ws, ws.title, _analyzer_rows(bvdf, vnm))
+                                done.append(ws.title)
+                            st.success(f"Filled {len(done)} tab(s): {', '.join(done) or '—'}")
+                            if skipped:
+                                st.caption("Skipped (campaign not in this export): " + "; ".join(skipped))
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"Failed: {type(e).__name__}: {e}")
+                st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link. "
+                           "**Send** uses the current per-variant view (respects your filters); "
+                           "**Fill all** uses each campaign's full data from the export. Money is "
+                           "written in CZK as in the export; percentages go in as fractions into "
+                           "percent-formatted cells. Re-sending overwrites the block in place.")
+        elif selected_test:
+            st.caption("ℹ️ Add a `gcp_service_account` + `gsheets_spreadsheet_id` to secrets to "
+                       "enable **Send to Google Sheets**.")
 
         # Two VWO-only device tables (mobile+tablet, desktop) under the main per-variant table.
         if vwo_token and selected_test:

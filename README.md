@@ -72,6 +72,34 @@ vwo_token = "your-vwo-api-token"   # generate at app.vwo.com/#/developers/tokens
 vwo_account_id = "717496"
 ```
 
+### Send to Google Sheets (finalization)
+
+The Per-variant view has a **📤 Send to Google Sheets** panel that writes the analyzer
+numbers into your finalization spreadsheet's **"Pro porovnání z Analyzeru (BG)"** block
+(the comparison-with-department block) — one per eshop tab.
+
+- **Routing:** each eshop tab declares its VWO campaign id in cell **B1** (the `.../ab/<id>/`
+  link). The app matches the selected test id to that tab — no domain guessing.
+- **Send test → its tab:** writes the current per-variant view to the matching tab.
+- **Fill all tabs from this export:** loops every tab's B1 id, computes that campaign's
+  per-variant numbers from the loaded export, and writes them all.
+- Columns written: Zobrazení (Visitors), Konverzí obj. (Orders), % Konverze, Revenue,
+  Prům./obj. (AOV), Storno, % Storno, Marže, Prům. marže/obj. — money in CZK, percentages
+  as fractions into percent-formatted cells. Re-sending overwrites the block in place.
+
+**Setup:** a Google **service account** with the Sheets API enabled; share the spreadsheet
+with its email (Editor); put the key + spreadsheet id in secrets:
+
+```toml
+gsheets_spreadsheet_id = "your-spreadsheet-id"
+[gcp_service_account]   # the fields from the downloaded JSON key
+type = "service_account"
+project_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+client_email = "...@....iam.gserviceaccount.com"
+# token_uri, private_key_id, client_id …
+```
+
 ## Run locally
 
 ```bash
