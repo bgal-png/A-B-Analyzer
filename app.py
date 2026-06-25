@@ -1239,16 +1239,20 @@ def main() -> None:
                     st.caption("VWO visitors/conversions for each device segment (campaign-wide, "
                                "all eshops). CR% = conversions ÷ visitors; CR lift % vs control is "
                                "computed from these counts (not VWO's Bayesian improvement).")
-                    for label, key in (("📱 Mobile + tablet", "mobile"), ("🖥️ Desktop", "desktop")):
+                    # Two half-width tables side by side (mobile left, desktop right).
+                    dev_cols = st.columns(2)
+                    for (label, key), dcol in zip(
+                            (("📱 Mobile + tablet", "mobile"), ("🖥️ Desktop", "desktop")), dev_cols):
                         seg = segs[key]
-                        st.markdown(f"**{label}**")
+                        dcol.markdown(f"**{label}**")
                         if seg.get("_error"):
-                            st.caption(f"Unavailable: {seg['_error']}")
+                            dcol.caption(f"Unavailable: {seg['_error']}")
                             continue
                         dt = vwo_device_one_table(ddata, seg)
-                        st.dataframe(device_variant_styler(dt), use_container_width=True,
-                                     hide_index=True)
-                        download_button(dt, f"Download {key} split", f"per_variant_{key}")
+                        dcol.dataframe(device_variant_styler(dt), use_container_width=True,
+                                       hide_index=True)
+                        with dcol:
+                            download_button(dt, f"Download {key} split", f"per_variant_{key}")
 
         if show_private:
             cat_note = (f" in {', '.join(sel_cat)}" if sel_cat else "")
