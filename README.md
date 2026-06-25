@@ -48,9 +48,15 @@ export, then copy or download clean figures for your master sheet.
 A sidebar **Section** switch toggles between the **Sales analyzer** and a **VWO campaigns**
 view that works without uploading a file. It lists all campaigns (searchable by name/id),
 and selecting one shows **every goal's** per-variation Visitors / Conversions / CR% (+ revenue).
-Selecting **2+** campaigns puts them **side by side to compare** (e.g. a desktop campaign vs a
-mobile/tablet one — VWO's device segments aren't exposed by the API, so comparison is per
-campaign). The campaign list is one cached call; each opened campaign is one more.
+Selecting **2+** campaigns puts them **side by side to compare**. The campaign list is one
+cached call; each opened campaign is one more.
+
+**Device split (desktop vs mobile + tablet).** Toggle **📱 Add device split** to pull VWO's
+post-segmentation device breakdown per campaign — per variation it shows Desktop and
+Mobile+Tablet Visitors, Conversions, CR% and lift% vs control (within each device). This uses
+VWO's `/segment` post-segmentation endpoint with a *custom* device segment (`operator 11`,
+`rOperandValue` = device list), authenticated by the same API token; the date range and primary
+goal come from the campaign report. Two extra API calls per campaign (cached 1h).
 
 ## VWO secrets
 

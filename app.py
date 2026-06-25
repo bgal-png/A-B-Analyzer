@@ -18,6 +18,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 VWO_CAMPAIGN_URL = "https://app.vwo.com/api/v2/accounts/{acc}/campaigns/{cid}"
+# Post-segmentation endpoint (device splits etc.). The public host 307-redirects to
+# the account's region path; account 717496 lives on eu01, so we hit it directly.
+VWO_SEGMENT_URL = "https://app.vwo.com/eu01/api/v2/accounts/{acc}/campaigns/{cid}/segment"
 
 
 def _vwo_get(url: str, token: str, timeout: int = 30, retries: int = 3) -> dict:
@@ -27,6 +30,33 @@ def _vwo_get(url: str, token: str, timeout: int = 30, retries: int = 3) -> dict:
         try:
             req = urllib.request.Request(url, headers={"token": token, "User-Agent": "Mozilla/5.0"})
             return json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            raise
+    raise last_err if last_err else RuntimeError("request failed")
+
+
+def _vwo_post(url: str, token: str, body: dict, timeout: int = 45, retries: int = 3) -> dict:
+    """POST JSON + parse JSON, with the same retry/backoff as `_vwo_get`."""
+    payload = json.dumps(body).encode("utf-8")
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={"token": token, "Content-Type": "application/json",
+                         "User-Agent": "Mozilla/5.0"})
+            raw = urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else {}
         except urllib.error.HTTPError as e:
             last_err = e
             if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
@@ -90,6 +120,117 @@ def vwo_revenue_value(data: dict) -> dict[str, float]:
         return {}
     return {str(v): round(float(d.get("totalRevenue", 0)), 2)
             for v, d in rgoal.get("aggregatedData", {}).items() if "totalRevenue" in d}
+
+
+def vwo_primary_goal_id(data: dict):
+    """The campaign's primary goal id (falls back to the first goal)."""
+    goals = data.get("goals", [])
+    return next((g.get("id") for g in goals if g.get("isPrimary")),
+               goals[0].get("id") if goals else None)
+
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
+def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tuple,
+                      goal_id, start_ts, end_ts) -> dict:
+    """{variation_id: {visitors, conversions}} for a device segment, via post-segmentation.
+
+    `devices` is a tuple like ("desktop",) or ("mobile", "tablet"). Uses a *custom*
+    segment so the device operand actually filters (a "predefined" id is server-side
+    and ignores the operand). On failure returns {"_error": "..."}.
+    """
+    body = {
+        "goals": str(goal_id),
+        "id": int(campaign_id),
+        "startTime": int(start_ts),
+        "endTime": int(end_ts),
+        "segments": {"id": "dev", "type": "custom", "partialSegments": [
+            {"operator": 11, "rOperandValue": list(devices),
+             "id": "18-VwoPostWebsite", "queryElementType": "partialQuery"}]},
+        "__preventNotifyOnError": True, "isGuardrail": False,
+    }
+    try:
+        res = _vwo_post(VWO_SEGMENT_URL.format(acc=account_id, cid=campaign_id), token, body)
+        d = res.get("_data", res)  # the regional endpoint wraps the report in `_data`
+        out: dict[str, dict] = {}
+        for vgd in d.get("variationGoalData", []):
+            if goal_id is not None and str(vgd.get("goal")) != str(goal_id):
+                continue
+            agg = vgd.get("aggregated", {})
+            out[str(vgd.get("variation"))] = {
+                "visitors": int(agg.get("visitorCount", 0)),
+                "conversions": int(agg.get("conversionCount", 0))}
+        return out or {"_error": "no segment data"}
+    except urllib.error.HTTPError as e:
+        return {"_error": f"HTTP {e.code} {e.reason}"}
+    except Exception as e:  # noqa: BLE001
+        return {"_error": f"{type(e).__name__}: {e}"}
+
+
+def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
+    """Desktop vs Mobile+Tablet per variation: Visitors, Conversions, CR%, lift% vs control."""
+    names = {str(v["id"]): v.get("name", "") for v in data.get("variations", [])}
+    ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
+    vids = sorted(set(desk) | set(mob), key=lambda x: (len(x), x))
+
+    def cr(seg, vid):
+        s = seg.get(vid, {})
+        vis = s.get("visitors", 0)
+        return (s.get("conversions", 0) / vis * 100) if vis else None
+
+    ctrl_vid = next((v for v in vids if v in ctrl), None)
+    desk_ctrl = cr(desk, ctrl_vid) if ctrl_vid else None
+    mob_ctrl = cr(mob, ctrl_vid) if ctrl_vid else None
+
+    rows = []
+    for vid in vids:
+        dv, mv = desk.get(vid, {}), mob.get(vid, {})
+        d_cr, m_cr = cr(desk, vid), cr(mob, vid)
+        is_ctrl = vid in ctrl
+        rows.append({
+            "Variation": f"{vid} · {names.get(vid, '')}" + (" (ctrl)" if is_ctrl else ""),
+            "Desktop vis": dv.get("visitors", 0),
+            "Desktop conv": dv.get("conversions", 0),
+            "Desktop CR%": round(d_cr, 2) if d_cr is not None else None,
+            "Desktop lift%": (None if is_ctrl or not desk_ctrl or d_cr is None
+                              else round((d_cr / desk_ctrl - 1) * 100, 2)),
+            "Mob+Tab vis": mv.get("visitors", 0),
+            "Mob+Tab conv": mv.get("conversions", 0),
+            "Mob+Tab CR%": round(m_cr, 2) if m_cr is not None else None,
+            "Mob+Tab lift%": (None if is_ctrl or not mob_ctrl or m_cr is None
+                              else round((m_cr / mob_ctrl - 1) * 100, 2)),
+        })
+    return pd.DataFrame(rows)
+
+
+def device_styler(tbl: pd.DataFrame):
+    """Styler for the device table: ints, CR% plain, lift% signed; best CR/lift highlighted."""
+    num_cols = [c for c in tbl.columns if c != "Variation"]
+
+    def fmt_for(c):
+        if "lift" in c:
+            return lambda v: "" if pd.isna(v) else f"{v:+.2f}%"
+        if c.endswith("%"):
+            return lambda v: "" if pd.isna(v) else f"{v:.2f}%"
+        return lambda v: "" if pd.isna(v) else f"{int(v):,}"
+
+    def highlight(col):
+        s = pd.to_numeric(col, errors="coerce")
+        uniq = sorted(s.dropna().unique(), reverse=True)  # higher = better
+        best = uniq[0] if uniq else None
+        second = uniq[1] if len(uniq) > 1 else None
+        out = []
+        for v in s:
+            if best is not None and v == best:
+                out.append("background-color: rgba(76,175,80,0.30)")
+            elif second is not None and v == second:
+                out.append("background-color: rgba(240,200,70,0.28)")
+            else:
+                out.append("")
+        return out
+
+    rate_cols = [c for c in num_cols if c.endswith("%")]  # highlight the comparison cols only
+    return (tbl.style.format({c: fmt_for(c) for c in num_cols})
+            .apply(highlight, subset=rate_cols))
 
 
 def _extract_campaign_list(payload) -> list:
@@ -622,6 +763,9 @@ def render_vwo_page() -> None:
 
     # Either browse the list by name, OR type IDs directly — one or the other.
     browse = st.toggle("Browse by name (otherwise enter IDs below)", value=False)
+    dev_split = st.toggle("📱 Add device split (desktop vs mobile + tablet)", value=False,
+                          help="Pulls VWO's post-segmentation device breakdown per campaign "
+                               "(2 extra API calls each).")
     ids: list[str] = []
     if browse:
         with st.spinner("Loading campaign list from VWO…"):
@@ -678,6 +822,27 @@ def render_vwo_page() -> None:
         tbl = vwo_all_goals_table(data)
         col.dataframe(vwo_styler(tbl), use_container_width=True, hide_index=True)
         download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
+
+        if dev_split:
+            pid = vwo_primary_goal_id(data)
+            s_ts = dr.get("limitingStartTime") or dr.get("startTime")
+            e_ts = dr.get("limitingEndTime") or dr.get("endTime")
+            if not (pid and s_ts and e_ts):
+                col.caption("Device split unavailable — no goal/date range on this campaign.")
+            else:
+                with st.spinner("Fetching device split from VWO…"):
+                    desk = fetch_vwo_segment(str(acc), cid, token, ("desktop",), pid, s_ts, e_ts)
+                    mob = fetch_vwo_segment(str(acc), cid, token, ("mobile", "tablet"),
+                                            pid, s_ts, e_ts)
+                err = desk.get("_error") or mob.get("_error")
+                if err:
+                    col.caption(f"Device split unavailable: {err}")
+                else:
+                    col.markdown("**Device split** · desktop vs mobile + tablet "
+                                 "(primary goal · lift% vs control within each device)")
+                    devt = vwo_device_compare_table(data, desk, mob)
+                    col.dataframe(device_styler(devt), use_container_width=True, hide_index=True)
+                    download_button(devt, f"Download device split {cid}", f"vwo_dev_{cid}")
 
         periods = vwo_running_periods(data)
         if periods:
