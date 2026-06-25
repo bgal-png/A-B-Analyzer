@@ -912,39 +912,6 @@ def render_vwo_page() -> None:
         st.info("Add `vwo_token` (and `vwo_account_id`) to Streamlit secrets to use this section.")
         return
 
-    # 📤 Fill just the VWO + device blocks in the sheet — no sales export needed.
-    if gsheets_ready():
-        with st.expander("📤 Update VWO blocks in Google Sheets (no sales export needed)"):
-            try:
-                default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
-            except Exception:
-                default_sid = ""
-            sid = st.text_input("Target spreadsheet — paste link or id", value=default_sid,
-                                key="vwo_only_sid")
-            st.caption(f"Fills only the **VWO + Desktop/Mobile** blocks (and dates) on each tab; "
-                       f"the **Alensis** block is left untouched. Writes as `{gsa_email()}` "
-                       "(must be an Editor). Tabs matched by the campaign id in their **B1** link.")
-            if st.button("Update VWO blocks on all tabs", key="vwo_only_fill"):
-                try:
-                    sh = _open_spreadsheet(_gsheets_client(), sid)
-                    tabs = campaign_tab_map(sh)
-                    if not tabs:
-                        st.warning("No tabs with a VWO campaign link in B1.")
-                    else:
-                        done, skipped = [], []
-                        for cid, ws in tabs.items():
-                            try:
-                                write_template_blocks(ws, ws.title, None,
-                                                      vwo_block_data(cid, acc, token))
-                                done.append(ws.title)
-                            except Exception as we:  # noqa: BLE001
-                                skipped.append(f"{ws.title} ({we})")
-                        st.success(f"Updated VWO blocks on {len(done)} tab(s): {', '.join(done) or '—'}")
-                        if skipped:
-                            st.caption("Skipped: " + "; ".join(skipped))
-                except Exception as e:  # noqa: BLE001
-                    show_gsheets_error(e)
-
     # Either browse the list by name, OR type IDs directly — one or the other.
     browse = st.toggle("Browse by name (otherwise enter IDs below)", value=False)
     dev_split = st.toggle("📱 Add device split (desktop vs mobile + tablet)", value=False,
@@ -984,6 +951,38 @@ def render_vwo_page() -> None:
     if not ids:
         st.info("Enter test IDs, or switch on **Browse by name** to pick from the list.")
         return
+
+    # 📤 Fill the VWO + device blocks for the SELECTED campaigns only — no sales export needed.
+    if gsheets_ready():
+        with st.expander(f"📤 Update VWO blocks in Google Sheets — {len(ids)} selected "
+                         f"campaign{'s' if len(ids) != 1 else ''}"):
+            try:
+                default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
+            except Exception:
+                default_sid = ""
+            sid = st.text_input("Target spreadsheet — paste link or id", value=default_sid,
+                                key="vwo_only_sid")
+            st.caption(f"Fills only the **VWO + Desktop/Mobile** blocks (and dates) for the "
+                       f"selected campaign(s), into the tab whose **B1** link matches each id. "
+                       f"The **Alensis** block is left untouched. Writes as `{gsa_email()}` (Editor).")
+            if st.button("Update VWO blocks for selected campaigns", key="vwo_only_fill"):
+                try:
+                    sh = _open_spreadsheet(_gsheets_client(), sid)
+                    tabs = campaign_tab_map(sh)
+                    done, missing = [], []
+                    for cid in ids:
+                        ws = tabs.get(str(cid))
+                        if ws is None:
+                            missing.append(str(cid))
+                            continue
+                        write_template_blocks(ws, ws.title, None, vwo_block_data(cid, acc, token))
+                        done.append(ws.title)
+                    if done:
+                        st.success(f"Updated VWO blocks on {len(done)} tab(s): {', '.join(done)}")
+                    if missing:
+                        st.warning("No tab has a B1 link for campaign(s): " + ", ".join(missing))
+                except Exception as e:  # noqa: BLE001
+                    show_gsheets_error(e)
 
     # 2 campaigns → side by side; 3+ → stacked vertically (full width, more readable).
     vertical = len(ids) > 2
