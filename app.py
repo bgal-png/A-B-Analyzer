@@ -287,7 +287,7 @@ def device_variant_styler(tbl: pd.DataFrame):
         if c.endswith("%"):
             return lambda v: "" if pd.isna(v) else f"{v:.2f}%"
         if "revenue" in c:
-            return lambda v: "" if pd.isna(v) else f"{v:,.0f} Kč"
+            return lambda v: "" if pd.isna(v) else f"{v:,.0f}"  # VWO revenue currency varies per test
         return lambda v: "" if pd.isna(v) else f"{int(v):,}"
 
     def highlight(col):
