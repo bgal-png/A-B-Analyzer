@@ -1020,6 +1020,29 @@ def _open_spreadsheet(client, id_or_url: str):
     return client.open_by_key(m.group(1) if m else id_or_url)
 
 
+def gsa_email() -> str:
+    """The service account's email — the address that must be shared as Editor."""
+    try:
+        return st.secrets["gcp_service_account"].get("client_email", "")
+    except Exception:
+        return ""
+
+
+def show_gsheets_error(e: Exception) -> None:
+    """Render a friendly error; for access problems, say exactly who to share with."""
+    s = str(e)
+    access = (e.__class__.__name__ == "SpreadsheetNotFound"
+              or any(k in s for k in ("PERMISSION_DENIED", "permission", "403", "404",
+                                      "not found", "The caller does not have permission")))
+    if access:
+        st.error("⚠️ The app can't open or write to that spreadsheet — it isn't shared with the "
+                 "service account (or the link/id is wrong). **Open the spreadsheet → Share → add "
+                 "this address as an _Editor_:**")
+        st.code(gsa_email() or "(no client_email found in secrets)", language=None)
+    else:
+        st.error(f"Failed: {type(e).__name__}: {e}")
+
+
 def campaign_tab_map(sh) -> dict[str, object]:
     """{campaign_id: worksheet} read from each tab's B1 VWO link (e.g. .../ab/234/...)."""
     out: dict[str, object] = {}
@@ -1444,6 +1467,10 @@ def main() -> None:
                         "block to the app's secrets once (see README → *Send to Google Sheets*); then "
                         "the buttons appear here. Until then, use **Download per-variant** above and "
                         "paste manually.")
+                else:
+                    st.caption("✍️ The app writes as the address below — it must be an **Editor** on "
+                               "the spreadsheet (Share → add as Editor):")
+                    st.code(gsa_email(), language=None)
                 vnames: dict[str, str] = {}
                 if gsheets_ready() and vwo_token:
                     d0 = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
@@ -1461,7 +1488,7 @@ def main() -> None:
                             write_analyzer_block(ws, ws.title, rows)
                             st.success(f"Wrote {len(rows)} variants to “{ws.title}”.")
                     except Exception as e:  # noqa: BLE001
-                        st.error(f"Failed: {type(e).__name__}: {e}")
+                        show_gsheets_error(e)
                 if gsheets_ready() and c2.button("Fill all tabs from this export", use_container_width=True):
                     try:
                         sh = _open_spreadsheet(_gsheets_client(), sid)
@@ -1482,7 +1509,7 @@ def main() -> None:
                             if skipped:
                                 st.caption("Skipped (campaign not in this export): " + "; ".join(skipped))
                     except Exception as e:  # noqa: BLE001
-                        st.error(f"Failed: {type(e).__name__}: {e}")
+                        show_gsheets_error(e)
                 if gsheets_ready():
                     st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link. "
                                "**Send** uses the current per-variant view (respects your filters); "
