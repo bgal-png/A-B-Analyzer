@@ -962,9 +962,11 @@ def render_vwo_page() -> None:
                 default_sid = ""
             sid = st.text_input("Target spreadsheet — paste link or id", value=default_sid,
                                 key="vwo_only_sid")
-            st.caption(f"Fills only the **VWO + Desktop/Mobile** blocks (and dates) for the "
-                       f"selected campaign(s), into the tab whose **B1** link matches each id. "
-                       f"The **Alensis** block is left untouched. Writes as `{gsa_email()}` (Editor).")
+            st.caption("Fills only the **VWO + Desktop/Mobile** blocks (and dates) for the "
+                       "selected campaign(s), into the tab whose **B1** link matches each id. "
+                       "The **Alensis** block is left untouched.")
+            st.caption("✍️ The spreadsheet must be shared as **Editor** with this address:")
+            st.code(gsa_email(), language=None)
             if st.button("Update VWO blocks for selected campaigns", key="vwo_only_fill"):
                 try:
                     sh = _open_spreadsheet(_gsheets_client(), sid)
