@@ -524,7 +524,9 @@ TEAM_EMAILS: list[str] = [
     # add specific addresses here if any test orders use a non-alensa.eu email
 ]
 TEAM_EMAIL_DOMAINS: list[str] = [
-    "alensa.eu",  # all internal/team test orders use the company domain
+    "alensa.eu",   # internal/team test orders on the company domains
+    "videt.ro",
+    "adrial.eu",
 ]
 
 
