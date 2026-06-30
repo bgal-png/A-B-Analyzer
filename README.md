@@ -107,6 +107,12 @@ How it finds where to write:
   more campaigns, an *Update VWO blocks in Google Sheets* panel fills just the VWO +
   Desktop/Mobile blocks (and dates) for **those selected campaigns** — each routed to its tab by
   the B1 link, Alensis left untouched. Use it to refresh VWO numbers before you have the export.
+- **VWO block is header-driven too**, with **per-test custom goals.** Standard columns (Počet
+  zobrazení, Počet konverzí, Improvement, Konverzní poměr, Revenue, Průměr/obj.) fill by header
+  label. Test-specific goal columns (e.g. popup "výměn za privátku", "přidání do košíku") fill
+  from `VWO_CUSTOM_GOALS` in [`app.py`](app.py) — a map of *campaign id → {header label: VWO goal
+  id}*; add an entry per test. Derived columns (rates, "closes") are left for **sheet formulas**
+  — the app skips any header it doesn't recognise.
 
 **Setup:** a Google **service account** with the Sheets API enabled; share the spreadsheet
 with its email (Editor); put the key + spreadsheet id in secrets:

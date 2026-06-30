@@ -1075,6 +1075,27 @@ ALENSIS_LABELS = {
     "prumermarzeobjcelkem": ("Margin/obj", "kc"),
 }
 
+# VWO block is also HEADER-DRIVEN: normalized header label → (vwo-main key, format).
+# fmt None = leave the cell's own format (VWO money currency varies, written as-is).
+VWO_LABELS = {
+    "pocetzobrazeni": ("vis", "int"), "zobrazeni": ("vis", "int"),
+    "pocetkonverzi": ("conv", "int"), "pocetkonverziobj": ("conv", "int"),
+    "improvementkonverze": ("impr", "pct"), "improvement": ("impr", "pct"),
+    "konverznipomer": ("cr", "pct"), "pomerkonverze": ("cr", "pct"),
+    "revenue": ("rev", None), "revenuecelkem": ("rev", None),
+    "prumerobj": ("avg", None), "prumrevenuenaobj": ("avg", None), "prumhodnotaobj": ("avg", None),
+}
+
+# Per-test custom VWO goals: campaign id → {normalized header label: VWO goal id}.
+# Lets test-specific goal columns (e.g. popup interactions) fill into the VWO block.
+# Derived columns (rates, "closes") stay as sheet formulas — leave them out here.
+VWO_CUSTOM_GOALS = {
+    "272": {  # Invasive popup v3
+        "pocetvymenzaprivatku": 3,  # VWO goal "Invasive popup - product changed"
+        "pocetpridanidokosiku": 5,  # VWO goal "Invasive popup - add to basket"
+    },
+}
+
 
 def _col_letter(n: int) -> str:
     """1-based column index → spreadsheet letter (1→A, 27→AA)."""
@@ -1230,18 +1251,32 @@ def write_template_blocks(ws, eshop: str, vdf, vwo: dict) -> None:
     kc = {"numberFormat": {"type": "NUMBER", "pattern": '#,##0.00" Kč"'}}
     intf = {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}}
 
-    # ---- VWO block: B..G = Visitors, Conv, Improvement, CR%, Revenue, Avg/obj ----
+    fmt_obj = {"int": intf, "pct": pct, "kc": kc}
+
+    # ---- VWO block: header-driven — standard columns + per-test custom-goal columns ----
+    # Unrecognised headers (rates, "closes", etc.) are left for sheet formulas.
     v0 = pos["vwo"]
     values += [{"range": f"A{v0 + 1}", "values": [[vwo.get("date", "")]]},
                {"range": f"A{v0 + 2}", "values": [[eshop]]}]
-    main = []
-    for v in GS_VARS:
-        m = vwo.get("main", {}).get(v, {})
-        d = "Baseline" if v == "1" else _clean(m.get("impr"))
-        main.append([_clean(m.get("vis")), _clean(m.get("conv")), d,
-                     _clean(m.get("cr")), _clean(m.get("rev")), _clean(m.get("avg"))])
-    values.append({"range": f"B{v0 + 3}:G{v0 + 6}", "values": main})
-    fmts.append({"range": f"D{v0 + 3}:E{v0 + 6}", "format": pct})  # Improvement + CR (VWO money as-is)
+    main = vwo.get("main", {})
+    goal_conv = vwo.get("goal_conv", {})
+    custom = vwo.get("custom_labels", {})
+    vheader = ws.row_values(v0 + 2)
+    for idx, label in enumerate(vheader, start=1):
+        key = normalize_text(label)
+        col = _col_letter(idx)
+        if key in VWO_LABELS:
+            metric, fmt = VWO_LABELS[key]
+            colvals = [["Baseline" if (metric == "impr" and v == "1")
+                        else _clean(main.get(v, {}).get(metric))] for v in GS_VARS]
+        elif key in custom:
+            gid, fmt = str(custom[key]), "int"
+            colvals = [[_clean(goal_conv.get(gid, {}).get(v))] for v in GS_VARS]
+        else:
+            continue  # derived/unknown column → leave for the sheet's own formula
+        values.append({"range": f"{col}{v0 + 3}:{col}{v0 + 6}", "values": colvals})
+        if fmt:
+            fmts.append({"range": f"{col}{v0 + 3}:{col}{v0 + 6}", "format": fmt_obj[fmt]})
 
     # ---- Desktop / Mobile sub-blocks: B..G (no Improvement column) ----
     for key in ("desktop", "mobile"):
@@ -1312,12 +1347,17 @@ def vwo_block_data(test_id: str, vwo_acc, vwo_token) -> dict:
     Each variant maps to {vis, conv, impr, cr, rev, avg} (fractions for cr/impr; rev as
     VWO returns it). Used to fill the VWO + Desktop/Mobile blocks on their own.
     """
-    vwo = {"date": "", "main": {}, "desktop": {}, "mobile": {}}
+    vwo = {"date": "", "main": {}, "desktop": {}, "mobile": {},
+           "goal_conv": {}, "custom_labels": VWO_CUSTOM_GOALS.get(str(test_id), {})}
     if not vwo_token:
         return vwo
     data = fetch_vwo_campaign(str(vwo_acc), str(test_id), vwo_token)
     if not data or data.get("_error"):
         return vwo
+    # Per-variant conversions for every goal (lets per-test custom-goal columns fill).
+    vwo["goal_conv"] = {str(g.get("id")): {str(vid): d.get("conversionCount")
+                                           for vid, d in g.get("aggregatedData", {}).items()}
+                        for g in data.get("goals", [])}
     counts = vwo_primary_counts(data)
     impr = vwo_primary_improvement(data)
     revv = vwo_revenue_value(data)
