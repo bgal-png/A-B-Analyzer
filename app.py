@@ -5,6 +5,8 @@ test (handling pipe-delimited multi-test items), so figures never double-count.
 """
 from __future__ import annotations
 
+import calendar
+import datetime
 import io
 import json
 import re
@@ -174,6 +176,72 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
         return {"_error": f"HTTP {e.code} {e.reason}"}
     except Exception as e:  # noqa: BLE001
         return {"_error": f"{type(e).__name__}: {e}"}
+
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
+def fetch_vwo_ranged(account_id: str, campaign_id: str, token: str, goal_ids: tuple,
+                     primary_id, revenue_id, start_ts, end_ts) -> dict:
+    """All-device per-variation data for a date window (no device segment).
+
+    Same shape as fetch_vwo_segment ({vid: {visitors, conversions, revenue, improvement}})
+    plus a "_goal_conv" key ({goal_id: {vid: conversions}}) so custom-goal columns can be
+    windowed too. On failure returns {"_error": "..."}.
+    """
+    body = {
+        "goals": ",".join(str(g) for g in goal_ids) or str(primary_id),
+        "id": int(campaign_id),
+        "startTime": int(start_ts),
+        "endTime": int(end_ts),
+        "__preventNotifyOnError": True, "isGuardrail": False,
+    }
+    try:
+        res = _vwo_post(VWO_SEGMENT_URL.format(acc=account_id, cid=campaign_id), token, body)
+        d = res.get("_data", res)
+        out: dict[str, dict] = {}
+        goal_conv: dict[str, dict] = {}
+        for vgd in d.get("variationGoalData", []):
+            g = str(vgd.get("goal"))
+            vid = str(vgd.get("variation"))
+            agg = vgd.get("aggregated", {})
+            goal_conv.setdefault(g, {})[vid] = agg.get("conversionCount")
+            rec = out.setdefault(vid, {"visitors": 0, "conversions": 0,
+                                       "revenue": None, "improvement": None})
+            if g == str(primary_id):
+                rec["visitors"] = int(agg.get("visitorCount", 0))
+                rec["conversions"] = int(agg.get("conversionCount", 0))
+                ri = agg.get("relativeImprovementRate")
+                med = ri.get("median") if isinstance(ri, dict) else None
+                rec["improvement"] = round(med, 6) if med is not None else None
+            if revenue_id is not None and g == str(revenue_id) and "totalRevenue" in agg:
+                rec["revenue"] = round(float(agg.get("totalRevenue", 0)), 2)
+        if not out:
+            return {"_error": "no data in range"}
+        out["_goal_conv"] = goal_conv
+        return out
+    except urllib.error.HTTPError as e:
+        return {"_error": f"HTTP {e.code} {e.reason}"}
+    except Exception as e:  # noqa: BLE001
+        return {"_error": f"{type(e).__name__}: {e}"}
+
+
+def vwo_ranged_table(ranged: dict, data: dict) -> pd.DataFrame:
+    """Per-variation table (Visitors, Conversions, CR%, Improvement %, Revenue) for a window."""
+    names = {str(v["id"]): v.get("name", "") for v in data.get("variations", [])}
+    ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
+    vids = sorted((k for k in ranged if not k.startswith("_")), key=lambda x: (len(x), x))
+    rows = []
+    for vid in vids:
+        m = ranged.get(vid, {})
+        vis, conv, rev = m.get("visitors"), m.get("conversions"), m.get("revenue")
+        cr = (conv / vis) if vis else None
+        rows.append({
+            "Variation": f"{vid} · {names.get(vid, '')}" + (" (ctrl)" if vid in ctrl else ""),
+            "Visitors": vis, "Conversions": conv,
+            "CR%": round(cr, 6) if cr is not None else None,
+            "Improvement %": None if vid in ctrl else m.get("improvement"),
+            "Revenue": rev,
+        })
+    return pd.DataFrame(rows)
 
 
 def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
@@ -954,6 +1022,19 @@ def render_vwo_page() -> None:
         st.info("Enter test IDs, or switch on **Browse by name** to pick from the list.")
         return
 
+    # Optional custom date range — window the VWO numbers to an interval (else full campaign).
+    range_ts = None
+    if st.checkbox("📅 Custom date range (else full campaign)", value=False,
+                   help="Show and write VWO numbers only within these dates — e.g. from the test "
+                        "start up to a chosen cut-off like 25.6.2026."):
+        today = datetime.date.today()
+        rc1, rc2 = st.columns(2)
+        d_from = rc1.date_input("From", value=today - datetime.timedelta(days=30), key="vwo_from")
+        d_to = rc2.date_input("To", value=today, key="vwo_to")
+        range_ts = (calendar.timegm(d_from.timetuple()),
+                    calendar.timegm(d_to.timetuple()) + 86399)  # inclusive of the end day (UTC)
+        st.caption(f"VWO numbers windowed to **{fmt_date(range_ts[0])} → {fmt_date(range_ts[1])}**.")
+
     # 📤 Fill the VWO + device blocks for the SELECTED campaigns only — no sales export needed.
     if gsheets_ready():
         with st.expander(f"📤 Update VWO blocks in Google Sheets — {len(ids)} selected "
@@ -979,7 +1060,9 @@ def render_vwo_page() -> None:
                         if ws is None:
                             missing.append(str(cid))
                             continue
-                        write_template_blocks(ws, ws.title, None, vwo_block_data(cid, acc, token))
+                        rng = range_ts or (None, None)
+                        write_template_blocks(ws, ws.title, None,
+                                              vwo_block_data(cid, acc, token, rng[0], rng[1]))
                         done.append(ws.title)
                     if done:
                         st.success(f"Updated VWO blocks on {len(done)} tab(s): {', '.join(done)}")
@@ -1006,17 +1089,29 @@ def render_vwo_page() -> None:
                else fmt_date(dr.get("limitingEndTime") or dr.get("endTime")))
         col.caption(f"status: {data.get('status', '—')} · device: {data.get('device', 'all')} · "
                     f"📅 {start} → {end}")
-        tbl = vwo_all_goals_table(data)
-        col.dataframe(vwo_styler(tbl), use_container_width=True, hide_index=True)
-        download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
+        goals = data.get("goals", [])
+        goal_ids = tuple(str(g.get("id")) for g in goals if g.get("id") is not None)
+        pid = vwo_primary_goal_id(data)
+        rev_id = next((g.get("id") for g in goals if g.get("type") == "revenue"), None)
+
+        if range_ts:  # windowed view: Visitors / Conversions / CR% / Improvement / Revenue
+            ranged = fetch_vwo_ranged(str(acc), cid, token, goal_ids, pid, rev_id, *range_ts)
+            if ranged.get("_error"):
+                col.warning(f"Range data unavailable: {ranged['_error']}")
+            else:
+                col.caption(f"📅 windowed: **{fmt_date(range_ts[0])} → {fmt_date(range_ts[1])}**")
+                rtbl = vwo_ranged_table(ranged, data)
+                col.dataframe(device_styler(rtbl), use_container_width=True, hide_index=True)
+                download_button(rtbl, f"Download VWO {cid} (range)", f"vwo_r_{cid}")
+        else:
+            tbl = vwo_all_goals_table(data)
+            col.dataframe(vwo_styler(tbl), use_container_width=True, hide_index=True)
+            download_button(tbl, f"Download VWO {cid}", f"vwo_{cid}")
 
         if dev_split:
-            pid = vwo_primary_goal_id(data)
-            goals = data.get("goals", [])
-            goal_ids = tuple(str(g.get("id")) for g in goals if g.get("id") is not None)
-            rev_id = next((g.get("id") for g in goals if g.get("type") == "revenue"), None)
-            s_ts = dr.get("limitingStartTime") or dr.get("startTime")
-            e_ts = dr.get("limitingEndTime") or dr.get("endTime")
+            s_ts, e_ts = range_ts if range_ts else (
+                dr.get("limitingStartTime") or dr.get("startTime"),
+                dr.get("limitingEndTime") or dr.get("endTime"))
             if not (pid and s_ts and e_ts):
                 col.caption("Device split unavailable — no goal/date range on this campaign.")
             else:
@@ -1343,11 +1438,12 @@ def compute_variant_block(df: pd.DataFrame, test_id: str, use_gross: bool,
     return vdf, var_names
 
 
-def vwo_block_data(test_id: str, vwo_acc, vwo_token) -> dict:
+def vwo_block_data(test_id: str, vwo_acc, vwo_token, start_ts=None, end_ts=None) -> dict:
     """VWO dict for one campaign (no sales export needed): {date, main, desktop, mobile}.
 
     Each variant maps to {vis, conv, impr, cr, rev, avg} (fractions for cr/impr; rev as
-    VWO returns it). Used to fill the VWO + Desktop/Mobile blocks on their own.
+    VWO returns it). Pass start_ts/end_ts (unix) to window the numbers to a date range
+    (all metrics — main, device split, custom goals — reflect that window).
     """
     vwo = {"date": "", "main": {}, "desktop": {}, "mobile": {},
            "goal_conv": {}, "custom_labels": VWO_CUSTOM_GOALS.get(str(test_id), {})}
@@ -1356,29 +1452,46 @@ def vwo_block_data(test_id: str, vwo_acc, vwo_token) -> dict:
     data = fetch_vwo_campaign(str(vwo_acc), str(test_id), vwo_token)
     if not data or data.get("_error"):
         return vwo
-    # Per-variant conversions for every goal (lets per-test custom-goal columns fill).
-    vwo["goal_conv"] = {str(g.get("id")): {str(vid): d.get("conversionCount")
-                                           for vid, d in g.get("aggregatedData", {}).items()}
-                        for g in data.get("goals", [])}
-    counts = vwo_primary_counts(data)
-    impr = vwo_primary_improvement(data)
-    revv = vwo_revenue_value(data)
-    for v in GS_VARS:
-        c = counts.get(v, {})
-        vis, conv, rev = c.get("visitors"), c.get("conversions"), revv.get(v)
-        vwo["main"][v] = {"vis": vis, "conv": conv, "impr": impr.get(v),
-                          "cr": (conv / vis) if vis else None,
-                          "rev": rev, "avg": (rev / conv) if (rev is not None and conv) else None}
-    dr = data.get("dataIntervalRange", {})
-    s = dr.get("limitingStartTime") or dr.get("startTime")
-    e = dr.get("limitingEndTime") or dr.get("endTime")
-    if s:
-        running = str(data.get("status", "")).upper() == "RUNNING"
-        vwo["date"] = f"{fmt_date(s)} - {fmt_date(time.time()) if running else fmt_date(e)}"
     pid = vwo_primary_goal_id(data)
     goals = data.get("goals", [])
     gids = tuple(str(g.get("id")) for g in goals if g.get("id") is not None)
     rid = next((g.get("id") for g in goals if g.get("type") == "revenue"), None)
+
+    if start_ts and end_ts:
+        # ---- windowed: main + goal conversions from a ranged all-device call ----
+        s, e = int(start_ts), int(end_ts)
+        ranged = fetch_vwo_ranged(str(vwo_acc), str(test_id), vwo_token, gids, pid, rid, s, e)
+        if ranged.get("_error"):
+            return {**vwo, "_error": ranged["_error"]}
+        vwo["goal_conv"] = ranged.pop("_goal_conv", {})
+        for v in GS_VARS:
+            m = ranged.get(v, {})
+            vis, conv, rev = m.get("visitors"), m.get("conversions"), m.get("revenue")
+            vwo["main"][v] = {"vis": vis, "conv": conv, "impr": m.get("improvement"),
+                              "cr": (conv / vis) if vis else None, "rev": rev,
+                              "avg": (rev / conv) if (rev is not None and conv) else None}
+        vwo["date"] = f"{fmt_date(s)} - {fmt_date(e)}"
+    else:
+        # ---- full campaign: main + goal conversions from the report ----
+        vwo["goal_conv"] = {str(g.get("id")): {str(vid): d.get("conversionCount")
+                                               for vid, d in g.get("aggregatedData", {}).items()}
+                            for g in goals}
+        counts = vwo_primary_counts(data)
+        impr = vwo_primary_improvement(data)
+        revv = vwo_revenue_value(data)
+        for v in GS_VARS:
+            c = counts.get(v, {})
+            vis, conv, rev = c.get("visitors"), c.get("conversions"), revv.get(v)
+            vwo["main"][v] = {"vis": vis, "conv": conv, "impr": impr.get(v),
+                              "cr": (conv / vis) if vis else None, "rev": rev,
+                              "avg": (rev / conv) if (rev is not None and conv) else None}
+        dr = data.get("dataIntervalRange", {})
+        s = dr.get("limitingStartTime") or dr.get("startTime")
+        e = dr.get("limitingEndTime") or dr.get("endTime")
+        if s:
+            running = str(data.get("status", "")).upper() == "RUNNING"
+            vwo["date"] = f"{fmt_date(s)} - {fmt_date(time.time()) if running else fmt_date(e)}"
+
     if pid and s and e:
         for key, devs in (("desktop", ("desktop",)), ("mobile", ("mobile", "tablet"))):
             seg = fetch_vwo_segment(str(vwo_acc), str(test_id), vwo_token, devs, gids, pid, rid, s, e)
@@ -1393,10 +1506,14 @@ def vwo_block_data(test_id: str, vwo_acc, vwo_token) -> dict:
 
 
 def compute_template_data(df: pd.DataFrame, test_id: str, use_gross: bool,
-                          profit_col: str | None, vwo_acc, vwo_token):
-    """Everything to fill a template tab for one test: (Alensis vdf, VWO dict)."""
+                          profit_col: str | None, vwo_acc, vwo_token,
+                          start_ts=None, end_ts=None):
+    """Everything to fill a template tab for one test: (Alensis vdf, VWO dict).
+
+    start_ts/end_ts (unix) window the VWO side to a date range.
+    """
     vdf, _ = compute_variant_block(df, test_id, use_gross, profit_col, vwo_acc, vwo_token)
-    return vdf, vwo_block_data(test_id, vwo_acc, vwo_token)
+    return vdf, vwo_block_data(test_id, vwo_acc, vwo_token, start_ts, end_ts)
 
 
 def disable_clear_cache_shortcut() -> None:

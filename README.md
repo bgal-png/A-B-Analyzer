@@ -107,6 +107,10 @@ How it finds where to write:
   more campaigns, an *Update VWO blocks in Google Sheets* panel fills just the VWO +
   Desktop/Mobile blocks (and dates) for **those selected campaigns** — each routed to its tab by
   the B1 link, Alensis left untouched. Use it to refresh VWO numbers before you have the export.
+- **Custom date range:** the **VWO campaigns** page has a *📅 Custom date range* toggle. Set a
+  From/To window (e.g. test start → 25.6.2026) and the displayed numbers **and** the sheet update
+  are computed for that interval only — visitors, conversions, CR%, improvement, revenue, the
+  device split, and custom goals all respect the window (via VWO's ranged segment endpoint).
 - **VWO block is header-driven too**, with **per-test custom goals.** Standard columns (Počet
   zobrazení, Počet konverzí, Improvement, Konverzní poměr, Revenue, Průměr/obj.) fill by header
   label. Test-specific goal columns (e.g. popup "výměn za privátku", "přidání do košíku") fill
