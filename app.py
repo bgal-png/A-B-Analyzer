@@ -177,7 +177,7 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
 
 
 def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
-    """Desktop vs Mobile+Tablet per variation: Visitors, Conversions, CR%, VWO Impr% vs control."""
+    """Desktop vs Mobile+Tablet per variation: Visitors, Conversions, CR%, VWO Revenue."""
     names = {str(v["id"]): v.get("name", "") for v in data.get("variations", [])}
     ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
     vids = sorted(set(desk) | set(mob), key=lambda x: (len(x), x))
@@ -197,22 +197,22 @@ def vwo_device_compare_table(data: dict, desk: dict, mob: dict) -> pd.DataFrame:
             "Desktop vis": dv.get("visitors", 0),
             "Desktop conv": dv.get("conversions", 0),
             "Desktop CR%": round(d_cr, 6) if d_cr is not None else None,
-            "Desktop Impr%": None if is_ctrl else dv.get("improvement"),
+            "Desktop Revenue": dv.get("revenue"),
             "Mob+Tab vis": mv.get("visitors", 0),
             "Mob+Tab conv": mv.get("conversions", 0),
             "Mob+Tab CR%": round(m_cr, 6) if m_cr is not None else None,
-            "Mob+Tab Impr%": None if is_ctrl else mv.get("improvement"),
+            "Mob+Tab Revenue": mv.get("revenue"),
         })
     return pd.DataFrame(rows)
 
 
 def device_styler(tbl: pd.DataFrame):
-    """Styler for the device table: ints, CR% plain, Impr% signed; best CR/Impr highlighted."""
+    """Styler for the device table: ints, CR% percent, Revenue as-is; best CR/Revenue highlighted."""
     num_cols = [c for c in tbl.columns if c != "Variation"]
 
     def fmt_for(c):
-        if "Impr" in c:  # stored as a fraction → render as signed percent
-            return lambda v: "" if pd.isna(v) else f"{v * 100:+.2f}%"
+        if "Revenue" in c:  # VWO revenue currency varies by test → plain number, no symbol
+            return lambda v: "" if pd.isna(v) else f"{v:,.0f}"
         if c.endswith("%"):
             return lambda v: "" if pd.isna(v) else f"{v * 100:.2f}%"
         return lambda v: "" if pd.isna(v) else f"{int(v):,}"
@@ -232,9 +232,9 @@ def device_styler(tbl: pd.DataFrame):
                 out.append("")
         return out
 
-    rate_cols = [c for c in num_cols if c.endswith("%")]  # highlight the comparison cols only
+    hl_cols = [c for c in num_cols if c.endswith("%") or "Revenue" in c]  # comparison cols
     return (tbl.style.format({c: fmt_for(c) for c in num_cols})
-            .apply(highlight, subset=rate_cols))
+            .apply(highlight, subset=hl_cols))
 
 
 def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
@@ -1030,7 +1030,7 @@ def render_vwo_page() -> None:
                     col.caption(f"Device split unavailable: {err}")
                 else:
                     col.markdown("**Device split** · desktop vs mobile + tablet "
-                                 "(primary goal · VWO Impr% vs control within each device)")
+                                 "(primary goal · Visitors / Conv / CR% / VWO Revenue per device)")
                     devt = vwo_device_compare_table(data, desk, mob)
                     col.dataframe(device_styler(devt), use_container_width=True, hide_index=True)
                     download_button(devt, f"Download device split {cid}", f"vwo_dev_{cid}")
