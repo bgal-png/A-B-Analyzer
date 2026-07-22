@@ -964,6 +964,21 @@ RECOMMENDED_SETTINGS = """\
 """
 
 
+def _safe_html(html: str, height: int = 0, fallback: str | None = None) -> None:
+    """Render an HTML/JS component, but never fatally.
+
+    Uses streamlit.components.v1.html (the only API that runs JS in a same-origin iframe;
+    st.iframe takes a URL and st.html strips scripts). It's deprecated and slated for
+    removal — so if the call ever raises, degrade quietly (optionally show a plain fallback)
+    instead of taking the whole app down.
+    """
+    try:
+        components.html(html, height=height)
+    except Exception:  # noqa: BLE001 — API removed/changed: don't crash the app
+        if fallback is not None:
+            st.code(fallback, language=None)
+
+
 def render_copy_list(items: list[str]) -> None:
     """Compact list with a per-row copy-to-clipboard button."""
     rows = "".join(
@@ -1000,7 +1015,7 @@ def render_copy_list(items: list[str]) -> None:
       }}
     </script>
     """
-    components.html(html, height=len(items) * 24 + 8)
+    _safe_html(html, height=len(items) * 24 + 8, fallback="\n".join(items))
 
 
 def render_vwo_page() -> None:
@@ -1563,7 +1578,7 @@ def disable_clear_cache_shortcut() -> None:
     blocks keypress/keyup as a backstop. Ctrl/Cmd+C (copy) and typing in inputs are
     untouched. Guarded by element id so it's injected only once.
     """
-    components.html(
+    _safe_html(
         """
         <script>
         (function () {
