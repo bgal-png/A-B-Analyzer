@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import calendar
 import datetime
-import io
 import json
 import re
 import time
@@ -637,19 +636,29 @@ CAT_COLUMNS = {
 }
 
 
-@st.cache_data(show_spinner=False, max_entries=2)
-def load_data(raw: bytes, name: str) -> pd.DataFrame:
-    """Parse the uploaded export into a typed DataFrame (only the columns we use)."""
+@st.cache_data(show_spinner=False, max_entries=1)
+def load_data(_file, name: str, size: int) -> pd.DataFrame:
+    """Parse the uploaded export into a typed DataFrame (only the columns we use).
+
+    Reads straight from the uploaded file object (`_file` — not hashed; cached on
+    name+size). Avoids copying the raw bytes (getvalue() + BytesIO would each duplicate
+    an ~900 MB upload, blowing past memory on large files).
+    """
     # Read our known columns plus any email column (auto-detected by name) for team-order exclusion.
     wanted = lambda c: (str(c).strip() in USED_COLUMNS) or ("mail" in str(c).strip().lower())
+    try:
+        _file.seek(0)
+    except Exception:
+        pass
     if name.lower().endswith((".xlsx", ".xls")):
-        df = pd.read_excel(io.BytesIO(raw), dtype=str, usecols=wanted)
+        df = pd.read_excel(_file, dtype=str, usecols=wanted)
     else:
         # Semicolon-delimited, UTF-8 BOM. Read repeating text as category (lower peak),
-        # the rest as str; coerce numerics after.
+        # the rest as str; coerce numerics after. Read straight from the upload object —
+        # NOT via getvalue()/BytesIO, which each duplicate the ~900 MB upload in RAM.
         dtypes = {c: ("category" if c in CAT_COLUMNS else str) for c in USED_COLUMNS}
         df = pd.read_csv(
-            io.BytesIO(raw), sep=";", dtype=dtypes, usecols=wanted,
+            _file, sep=";", dtype=dtypes, usecols=wanted,
             encoding="utf-8-sig", keep_default_na=False,
         )
     df.columns = [c.strip() for c in df.columns]
@@ -1607,7 +1616,7 @@ def main() -> None:
         st.info("Upload a sales export to begin. Pick one test at a time for clean A/B figures.")
         st.stop()
 
-    df = load_data(uploaded.getvalue(), uploaded.name)
+    df = load_data(uploaded, uploaded.name, uploaded.size)
     st.caption(f"Loaded **{len(df):,}** line items · **{df[COL_ORDER].nunique():,}** orders"
                if COL_ORDER in df.columns else f"Loaded {len(df):,} rows")
 
