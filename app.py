@@ -626,6 +626,7 @@ USED_COLUMNS = {
     COL_CANCEL, COL_FINAL, COL_ITEMTYPE, COL_PROJITEM, COL_PROJECT,
     "itemname", "commonName", "payment", "orderDestinationCountryId", "delivery_type",
     "orderMonth", "orderDay", "categoriesData-brand", "categoriesData-items-type",
+    "customerIpAddress",
     *PROFIT_COLS.values(),
 }
 # Repeating-text columns read straight as category to cut peak memory on big CSVs.
@@ -718,6 +719,24 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
         df = df.drop(columns=[email_col])  # raw email not needed downstream
     else:
         df["_is_team"] = False
+
+    # Per-order rank within its IP (0 = first order that IP placed, by order time). Powers the
+    # "cap orders per IP" filter. Ranks distinct orders (not the duplicate line rows); orders
+    # with no IP get rank 0 (never capped). Raw IP dropped afterwards.
+    if "customerIpAddress" in df.columns and COL_ORDER in df.columns:
+        od = df[[COL_ORDER, "customerIpAddress"]].copy()
+        od["_ts"] = df["_order_dt"] if "_order_dt" in df.columns else range(len(df))
+        orders = od.sort_values("_ts", kind="stable").drop_duplicates(COL_ORDER)
+        ipn = orders["customerIpAddress"].astype(str).str.strip()
+        rank = pd.Series(0, index=orders.index, dtype="int64")
+        has_ip = ipn != ""
+        rank.loc[has_ip] = orders.loc[has_ip].groupby(ipn[has_ip]).cumcount()
+        orders["_r"] = rank
+        df["_ip_rank"] = (df[COL_ORDER].map(orders.set_index(COL_ORDER)["_r"])
+                          .fillna(0).astype("int32"))
+        df = df.drop(columns=["customerIpAddress"])
+    else:
+        df["_ip_rank"] = 0
 
     # Project / eshop label from ref_projects id.
     if COL_PROJECT in df.columns:
@@ -1690,8 +1709,30 @@ def main() -> None:
                                         "Applies everywhere, including the Google Sheets export.")
         if exclude_team:
             work = work[~work["_is_team"]]
-    # df the Google Sheets export uses (team orders dropped to match the on-screen report).
-    report_df = df[~df["_is_team"]] if (exclude_team and "_is_team" in df.columns) else df
+
+    # Cap orders per IP: keep each IP's first N orders (by time), drop the rest — removes
+    # store/terminal/bot over-counting. Counts distinct orders (not the line rows).
+    cap_on, cap_n = False, 3
+    if "_ip_rank" in df.columns and (df["_ip_rank"] > 0).any():
+        cc1, cc2 = sb.columns([2, 1])
+        cap_on = cc1.checkbox("Cap orders per IP", value=True,
+                              help="Count at most N orders per IP address and drop the rest "
+                                   "(e.g. a store/terminal placing many orders). Applies to the "
+                                   "sales figures and the export; VWO visitor counts are unaffected.")
+        cap_n = int(cc2.number_input("max", min_value=1, max_value=50, value=3, step=1,
+                                     label_visibility="collapsed", disabled=not cap_on))
+        if cap_on:
+            n_drop = df.loc[df["_ip_rank"] >= cap_n, COL_ORDER].nunique()
+            work = work[work["_ip_rank"] < cap_n]
+            sb.caption(f"Capped at {cap_n} orders/IP — dropped {n_drop:,} orders.")
+
+    # df the Google Sheets export uses (same team + IP-cap filters as the on-screen report).
+    exp_mask = pd.Series(True, index=df.index)
+    if exclude_team and "_is_team" in df.columns:
+        exp_mask &= ~df["_is_team"]
+    if cap_on and "_ip_rank" in df.columns:
+        exp_mask &= df["_ip_rank"] < cap_n
+    report_df = df[exp_mask] if not exp_mask.all() else df
 
     # Item type. Selection stored now and applied to work below. In Per-variant it
     # constrains revenue (via _is_product) but never the margin, which spans all lines.

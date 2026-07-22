@@ -11,6 +11,11 @@ export, then copy or download clean figures for your master sheet.
   double-count. Rows outside the test are excluded.
 - **Filters:** test, variant, date window, exclude cancelled, final-only, item
   type, include/exclude delivery lines, payment, country, delivery type, item name.
+- **Cap orders per IP** (default on when the export has `customerIpAddress`): counts at most
+  **N orders per IP** (default 3) and drops the rest — removes store/terminal/bot over-counting
+  (e.g. a shop till placing dozens of orders that all land on one A/B variant). Ranks *distinct
+  orders* (not the duplicate line rows), keeping each IP's earliest N. Applies to the sales
+  figures and the Sheets export; VWO visitor counts are unaffected.
 - **Exclude team / test orders** (default on): orders placed with an internal email are
   dropped from every view and the Sheets export. The email column is auto-detected (any
   column whose name contains "mail"); the team is defined by `TEAM_EMAILS` (exact addresses)
