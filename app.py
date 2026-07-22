@@ -1616,7 +1616,22 @@ def main() -> None:
         st.info("Upload a sales export to begin. Pick one test at a time for clean A/B figures.")
         st.stop()
 
-    df = load_data(uploaded, uploaded.name, uploaded.size)
+    # Large-file guard: warn before loading so a memory-heavy export doesn't just crash silently.
+    size_mb = (getattr(uploaded, "size", 0) or 0) / 1e6
+    if size_mb > 700:
+        st.warning(
+            f"⚠️ Large file (**{size_mb:,.0f} MB**). This is near the app's memory limit — loading "
+            "may be slow, and very large exports (roughly **2 million+ rows**) can crash the app. "
+            "If it fails, trim the export first (a single project, a date range, or fewer columns) "
+            "and re-upload.")
+
+    try:
+        with st.spinner(f"Loading {size_mb:,.0f} MB…"):
+            df = load_data(uploaded, uploaded.name, uploaded.size)
+    except Exception as e:  # noqa: BLE001 — parse/format errors; OOM kills the process outright
+        st.error(f"Couldn't load this file ({type(e).__name__}: {e}). If it's very large, upload a "
+                 "smaller or filtered export.")
+        st.stop()
     st.caption(f"Loaded **{len(df):,}** line items · **{df[COL_ORDER].nunique():,}** orders"
                if COL_ORDER in df.columns else f"Loaded {len(df):,} rows")
 
