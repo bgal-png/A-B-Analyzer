@@ -151,6 +151,8 @@ python trim_export.py sells-29513.csv              # keep only the analyzer's co
 
 - `--split` (recommended) writes one file per `ref_projects` id — usually tens of MB each,
   which load comfortably. You analyse one eshop/test at a time, so grab the project file you need.
+- `--outdir "…/AB trims"` collects the trimmed files in one folder. The `trim.bat` launcher
+  (double-click / drag a CSV onto it) runs `--split --outdir` for you.
 - Column-trimming alone (~halves the size) helps but a multi-million-row export can still be
   too big for the free tier; splitting by project is the reliable path.
 

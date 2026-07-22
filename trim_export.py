@@ -10,6 +10,7 @@ Usage:
     python trim_export.py sells-29513.csv --project 87    # keep only ref_projects 87 (videt.ro)
     python trim_export.py sells-29513.csv --split         # one file per project: sells-29513-<pid>.csv
     python trim_export.py sells-29513.csv --out small.csv  # custom output name
+    python trim_export.py sells-29513.csv --split --outdir "C:\\path\\to\\AB trims"  # write into a folder
 
 The trimmed file loads on Streamlit Cloud where the full one won't.
 """
@@ -44,12 +45,20 @@ def main() -> None:
     ap.add_argument("input", help="path to the full export CSV (semicolon-delimited)")
     ap.add_argument("--project", help="keep only rows with this ref_projects id (e.g. 87)")
     ap.add_argument("--split", action="store_true", help="write one file per ref_projects id")
-    ap.add_argument("--out", help="output path (default: <input>-trimmed.csv)")
+    ap.add_argument("--out", help="output path (default: <outdir>/<input>-trimmed.csv)")
+    ap.add_argument("--outdir", help="folder to write trimmed files into (default: next to input)")
     a = ap.parse_args()
 
     if not os.path.exists(a.input):
         sys.exit(f"File not found: {a.input}")
-    base, _ = os.path.splitext(a.input)
+    stem = os.path.splitext(os.path.basename(a.input))[0]
+
+    def outpath(suffix: str) -> str:
+        if a.outdir:
+            os.makedirs(a.outdir, exist_ok=True)
+            return os.path.join(a.outdir, stem + suffix)
+        return os.path.splitext(a.input)[0] + suffix
+
     reader = pd.read_csv(a.input, sep=";", dtype=str, usecols=wanted,
                          encoding="utf-8-sig", keep_default_na=False, chunksize=CHUNK)
 
@@ -58,7 +67,7 @@ def main() -> None:
         rows = 0
         for chunk in reader:
             for pid, grp in chunk.groupby("ref_projects"):
-                path = f"{base}-{pid}.csv"
+                path = outpath(f"-{pid}.csv")
                 grp.to_csv(path, sep=";", index=False, mode="a" if path in written else "w",
                            header=path not in written, encoding="utf-8-sig")
                 written.add(path)
@@ -68,7 +77,7 @@ def main() -> None:
             print(f"  {p}  ({os.path.getsize(p) / 1e6:.0f} MB)")
         return
 
-    out = a.out or f"{base}-trimmed.csv"
+    out = a.out or outpath("-trimmed.csv")
     rows_in = rows_out = 0
     first = True
     for chunk in reader:
