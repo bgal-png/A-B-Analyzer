@@ -631,9 +631,9 @@ USED_COLUMNS = {
 }
 # Repeating-text columns read straight as category to cut peak memory on big CSVs.
 CAT_COLUMNS = {
-    COL_TEST, COL_VARIANT, COL_ITEMTYPE, "payment", "orderDestinationCountryId",
-    "delivery_type", "itemname", "commonName", "orderMonth", "orderDay",
-    "categoriesData-brand", "categoriesData-items-type",
+    COL_TEST, COL_VARIANT, COL_ITEMTYPE, COL_CANCEL, COL_FINAL, "payment",
+    "orderDestinationCountryId", "delivery_type", "itemname", "commonName",
+    "orderMonth", "orderDay", "categoriesData-brand", "categoriesData-items-type",
 }
 
 
@@ -738,6 +738,12 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
     else:
         df["_ip_rank"] = 0
 
+    # Showroom-payment flag, precomputed once (avoids a full-column string scan per rerun).
+    if "payment" in df.columns:
+        df["_is_showroom"] = df["payment"].str.contains("showroom", case=False, na=False)
+    else:
+        df["_is_showroom"] = False
+
     # Project / eshop label from ref_projects id.
     if COL_PROJECT in df.columns:
         df["_project"] = df[COL_PROJECT].astype(str).str.strip().map(
@@ -751,10 +757,10 @@ def load_data(raw: bytes, name: str) -> pd.DataFrame:
 
     # Shrink memory on large files: store repeating text columns as category.
     # (Numerics kept as-is so revenue/margin sums stay exact to the cent.)
-    for c in ("ab_test_name", "ab_test_variant", COL_ITEMTYPE, "payment",
+    for c in ("ab_test_name", "ab_test_variant", COL_ITEMTYPE, COL_CANCEL, COL_FINAL, "payment",
               "orderDestinationCountryId", "delivery_type", "itemname", "commonName",
               "orderMonth", "orderDay", "_brand", "_item_category", "_project"):
-        if c in df.columns:
+        if c in df.columns and str(df[c].dtype) != "category":
             df[c] = df[c].astype("category")
     return df
 
@@ -1433,10 +1439,12 @@ def write_template_blocks(ws, eshop: str, vdf, vwo: dict) -> None:
 def compute_variant_block(df: pd.DataFrame, test_id: str, use_gross: bool,
                           profit_col: str | None, vwo_acc, vwo_token):
     """Per-variant df + VWO variation names for one test id (no extra filters). For fill-all."""
-    w = df.copy()
-    w["_variant"] = [variant_in_test(n, v, str(test_id))
-                     for n, v in zip(w[COL_TEST].astype(str), w[COL_VARIANT].astype(str))]
-    w = w[w["_variant"].notna() & (w["_variant"] != "")]
+    tok = re.escape(str(test_id))  # prefilter to the test's rows first (light on big exports)
+    w = df[df[COL_TEST].str.contains(rf"(?:^|\|){tok}(?:\||$)", regex=True, na=False)].copy()
+    if not w.empty:
+        w["_variant"] = [variant_in_test(n, v, str(test_id))
+                         for n, v in zip(w[COL_TEST].astype(str), w[COL_VARIANT].astype(str))]
+        w = w[w["_variant"].astype(bool)]
     if w.empty:
         return None, {}
     rows = [{"Variant": var, **eval_row(g, use_gross, profit_col, True),
@@ -1632,19 +1640,22 @@ def main() -> None:
                                format_func=lambda t: test_labels.get(t, t))
     selected_test = None if test_choice == NO_TEST else test_choice
 
-    work = df.copy()
-
-    # Resolve variant within the selected test (excludes non-participating rows).
+    # Resolve variant within the selected test. Prefilter to the test's rows FIRST (cheap,
+    # category-aware) so the per-row variant resolution never runs over the whole file —
+    # keeps big exports light.
     if selected_test is not None:
-        work["_variant"] = [
-            variant_in_test(n, v, selected_test)
-            for n, v in zip(work.get(COL_TEST, ""), work.get(COL_VARIANT, ""))
-        ]
-        work = work[work["_variant"].notna()].copy()
+        tok = re.escape(str(selected_test))
+        in_test = df[COL_TEST].str.contains(rf"(?:^|\|){tok}(?:\||$)", regex=True, na=False)
+        work = df[in_test].copy()
+        work["_variant"] = [variant_in_test(n, v, selected_test)
+                            for n, v in zip(work[COL_TEST].astype(str),
+                                            work[COL_VARIANT].astype(str))]
+        work = work[work["_variant"].astype(bool)]  # drop non-participating rows
         variants = sorted(work["_variant"].unique(), key=lambda x: (len(x), x))
         chosen = sb.multiselect("Variant", variants, default=variants)
         work = work[work["_variant"].isin(chosen)]
     else:
+        work = df.copy()
         v = work[COL_VARIANT].astype(str) if COL_VARIANT in work.columns else pd.Series("", index=work.index)
         work["_variant"] = v.where(v != "", "(none)")
 
@@ -1690,13 +1701,12 @@ def main() -> None:
         work = work[work[COL_FINAL] == "1"]
 
     # Showroom orders (paid via a Showroom payment method) — offer to exclude.
-    if "payment" in df.columns:
-        is_showroom = df["payment"].astype(str).str.contains("showroom", case=False, na=False)
-        if is_showroom.any():
-            n_sr = df.loc[is_showroom, COL_ORDER].nunique() if COL_ORDER in df.columns else int(is_showroom.sum())
-            if sb.checkbox(f"Exclude showroom orders ({n_sr:,})", value=False,
-                           help="Drops orders paid via a Showroom payment method."):
-                work = work[~work["payment"].astype(str).str.contains("showroom", case=False, na=False)]
+    if "_is_showroom" in df.columns and df["_is_showroom"].any():
+        n_sr = (df.loc[df["_is_showroom"], COL_ORDER].nunique()
+                if COL_ORDER in df.columns else int(df["_is_showroom"].sum()))
+        if sb.checkbox(f"Exclude showroom orders ({n_sr:,})", value=False,
+                       help="Drops orders paid via a Showroom payment method."):
+            work = work[~work["_is_showroom"]]
 
     # Team / internal test orders (matched on the customer email) — excluded by default.
     exclude_team = False
@@ -1778,7 +1788,7 @@ def main() -> None:
                          help="Searches the Czech commonName. Case-insensitive but "
                               "accent-sensitive: 'čoč' matches ČOČ/Čoč but not 'coc'.")
     if term and "commonName" in df.columns:
-        work = work[work["commonName"].astype(str).str.contains(term, case=False, na=False, regex=False)]
+        work = work[work["commonName"].str.contains(term, case=False, na=False, regex=False)]
 
     # _is_product marks the lines that count as product revenue (not delivery, and an
     # included item type). Per-variant revenue uses it; margin spans every line.
