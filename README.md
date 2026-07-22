@@ -136,6 +136,24 @@ client_email = "...@....iam.gserviceaccount.com"
 # token_uri, private_key_id, client_id …
 ```
 
+## Very large exports (trim before uploading)
+
+Streamlit Community Cloud (~1 GB RAM) buffers the whole upload in memory before the app
+runs, so a full ~800 MB+ export can crash it on load. Use the local **`trim_export.py`**
+helper on your own machine first — it streams the file (low memory) and writes a much
+smaller CSV, then upload that:
+
+```bash
+python trim_export.py sells-29513.csv --split     # one file per project (eshop)
+python trim_export.py sells-29513.csv --project 87 # just videt.ro
+python trim_export.py sells-29513.csv              # keep only the analyzer's columns
+```
+
+- `--split` (recommended) writes one file per `ref_projects` id — usually tens of MB each,
+  which load comfortably. You analyse one eshop/test at a time, so grab the project file you need.
+- Column-trimming alone (~halves the size) helps but a multi-million-row export can still be
+  too big for the free tier; splitting by project is the reliable path.
+
 ## Run locally
 
 ```bash
