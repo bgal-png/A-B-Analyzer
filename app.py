@@ -661,6 +661,12 @@ def load_data(_file, name: str, size: int) -> pd.DataFrame:
             _file, sep=";", dtype=dtypes, usecols=wanted,
             encoding="utf-8-sig", keep_default_na=False,
         )
+    return _derive_columns(df)
+
+
+def _derive_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce numerics, derive helper columns, drop raw cols, categorize — shared by
+    the upload loader and the Google Drive streaming loader."""
     df.columns = [c.strip() for c in df.columns]
     # Excel cells come back as NaN for blanks; normalise to "" so string ops and
     # filter sorts behave like the CSV path (which uses keep_default_na=False).
@@ -1274,18 +1280,106 @@ def _private_split_metrics(g: pd.DataFrame, use_gross: bool, profit_col: str | N
     return out
 
 
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+                 "https://www.googleapis.com/auth/drive.readonly"]
+
+
+@st.cache_resource(show_spinner=False)
+def _google_creds():
+    """Service-account credentials (Sheets write + Drive read), or None if not configured."""
+    try:
+        from google.oauth2.service_account import Credentials
+        return Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]), scopes=GOOGLE_SCOPES)
+    except Exception:
+        return None
+
+
 @st.cache_resource(show_spinner=False)
 def _gsheets_client():
     """Authorised gspread client from the service-account secret (None if not configured)."""
     try:
         import gspread
-        from google.oauth2.service_account import Credentials
-        info = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        return gspread.authorize(creds)
+        creds = _google_creds()
+        return gspread.authorize(creds) if creds else None
     except Exception:
         return None
+
+
+def _drive_token() -> str | None:
+    """A fresh OAuth access token for Drive REST calls (refreshes the service-account creds)."""
+    creds = _google_creds()
+    if not creds:
+        return None
+    try:
+        from google.auth.transport.requests import Request
+        if not creds.valid:
+            creds.refresh(Request())
+        return creds.token
+    except Exception:
+        return None
+
+
+def _drive_id_from(link_or_id: str) -> str:
+    """Accept a Drive folder/file id or a share link and return the bare id."""
+    m = re.search(r"/(?:folders|d)/([A-Za-z0-9_-]+)", link_or_id or "")
+    return m.group(1) if m else (link_or_id or "").strip()
+
+
+def drive_list_files(folder: str) -> list[dict]:
+    """List CSV/Excel files in a Drive folder (id or link) shared with the service account."""
+    import requests
+    tok = _drive_token()
+    if not tok:
+        return []
+    fid = _drive_id_from(folder)
+    params = {"q": f"'{fid}' in parents and trashed=false",
+              "fields": "files(id,name,size,modifiedTime)",
+              "orderBy": "modifiedTime desc", "pageSize": 100,
+              "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
+    r = requests.get("https://www.googleapis.com/drive/v3/files",
+                     headers={"Authorization": f"Bearer {tok}"}, params=params, timeout=30)
+    r.raise_for_status()
+    return [f for f in r.json().get("files", [])
+            if f.get("name", "").lower().endswith(".csv")]  # streaming loader is CSV-based
+
+
+def _drive_stream(file_id: str):
+    """Open a streaming byte reader for a Drive file (never loads it whole into RAM)."""
+    import requests
+    tok = _drive_token()
+    r = requests.get(f"https://www.googleapis.com/drive/v3/files/{file_id}",
+                     headers={"Authorization": f"Bearer {tok}"},
+                     params={"alt": "media", "supportsAllDrives": "true"},
+                     stream=True, timeout=600)
+    r.raise_for_status()
+    r.raw.decode_content = True
+    return r.raw
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def load_from_drive(file_id: str, modified: str, test_id: str) -> pd.DataFrame | None:
+    """Stream a big export from Drive and keep ONLY the selected test's rows.
+
+    Reads the CSV in chunks straight off the Drive download stream, filters each chunk to
+    the test (never holding the whole file), then derives columns on the small slice.
+    `modified` is part of the cache key so a re-uploaded file re-reads. Returns None if the
+    test has no rows in the file.
+    """
+    wanted = lambda c: (str(c).strip() in USED_COLUMNS) or ("mail" in str(c).strip().lower())
+    tok = re.escape(str(test_id))
+    pat = re.compile(rf"(?:^|\|){tok}(?:\||$)")
+    parts = []
+    reader = pd.read_csv(_drive_stream(file_id), sep=";", dtype=str, usecols=wanted,
+                         encoding="utf-8-sig", keep_default_na=False, chunksize=200_000)
+    for chunk in reader:
+        if COL_TEST in chunk.columns:
+            sub = chunk[chunk[COL_TEST].str.contains(pat, regex=True, na=False)]
+            if not sub.empty:
+                parts.append(sub)
+    if not parts:
+        return None
+    return _derive_columns(pd.concat(parts, ignore_index=True))
 
 
 def gsheets_ready() -> bool:
@@ -1609,6 +1703,44 @@ def disable_clear_cache_shortcut() -> None:
     )
 
 
+def _load_sales_from_drive() -> pd.DataFrame:
+    """Drive data source: pick a file from a shared folder + a test id, stream just that test."""
+    try:
+        default_folder = st.secrets.get("gdrive_folder_id", "")
+    except Exception:
+        default_folder = ""
+    folder = st.text_input("Drive folder (link or id) shared with the service account",
+                           value=default_folder,
+                           help="Put the full export in a Drive folder shared (Viewer) with the "
+                                "service account below. The app streams it — no upload, no size cap.")
+    st.caption("Share the Drive folder as **Viewer** with:")
+    st.code(gsa_email(), language=None)
+    if not folder:
+        st.info("Paste a Drive folder link/id above to list its export files.")
+        st.stop()
+    try:
+        files = drive_list_files(folder)
+    except Exception as e:  # noqa: BLE001
+        show_gsheets_error(e)
+        st.stop()
+    if not files:
+        st.warning("No CSV files found — check the folder is shared with the service account "
+                   "and the Drive API is enabled.")
+        st.stop()
+    by_label = {f"{f['name']}  ({int(f.get('size') or 0) / 1e6:.0f} MB)": f for f in files}
+    f = by_label[st.selectbox("Export file", list(by_label))]
+    test_id = st.text_input("Test id to load (streams just this test)", placeholder="e.g. 284").strip()
+    if not test_id:
+        st.info("Enter the VWO test id you're evaluating — only that test's rows are streamed in.")
+        st.stop()
+    with st.spinner(f"Streaming test {test_id} from Drive…"):
+        df = load_from_drive(f["id"], f.get("modifiedTime", ""), test_id)
+    if df is None or df.empty:
+        st.warning(f"No rows for test {test_id} in “{f['name']}”. Double-check the id.")
+        st.stop()
+    return df
+
+
 def main() -> None:
     st.set_page_config(page_title="A/B Sales Analyzer", layout="wide")
     disable_clear_cache_shortcut()
@@ -1626,27 +1758,32 @@ def main() -> None:
         render_vwo_page()
         return
 
-    uploaded = st.file_uploader("Upload sales export (CSV or Excel)", type=["csv", "xlsx", "xls"])
-    if uploaded is None:
-        st.info("Upload a sales export to begin. Pick one test at a time for clean A/B figures.")
-        st.stop()
+    # Data source: upload a file, or stream a big one from Google Drive by test.
+    sources = ["Upload a file"]
+    if gsheets_ready():
+        sources.append("Google Drive (large files)")
+    source = st.radio("Data source", sources, horizontal=True) if len(sources) > 1 else sources[0]
 
-    # Large-file guard: warn before loading so a memory-heavy export doesn't just crash silently.
-    size_mb = (getattr(uploaded, "size", 0) or 0) / 1e6
-    if size_mb > 700:
-        st.warning(
-            f"⚠️ Large file (**{size_mb:,.0f} MB**). This is near the app's memory limit — loading "
-            "may be slow, and very large exports (roughly **2 million+ rows**) can crash the app. "
-            "If it fails, trim the export first (a single project, a date range, or fewer columns) "
-            "and re-upload.")
-
-    try:
-        with st.spinner(f"Loading {size_mb:,.0f} MB…"):
-            df = load_data(uploaded, uploaded.name, uploaded.size)
-    except Exception as e:  # noqa: BLE001 — parse/format errors; OOM kills the process outright
-        st.error(f"Couldn't load this file ({type(e).__name__}: {e}). If it's very large, upload a "
-                 "smaller or filtered export.")
-        st.stop()
+    if source.startswith("Google Drive"):
+        df = _load_sales_from_drive()   # handles its own inputs; st.stop()s until ready
+    else:
+        uploaded = st.file_uploader("Upload sales export (CSV or Excel)", type=["csv", "xlsx", "xls"])
+        if uploaded is None:
+            st.info("Upload a sales export to begin. Pick one test at a time for clean A/B figures. "
+                    "For very large exports, switch to **Google Drive** above.")
+            st.stop()
+        size_mb = (getattr(uploaded, "size", 0) or 0) / 1e6
+        if size_mb > 700:
+            st.warning(
+                f"⚠️ Large file (**{size_mb:,.0f} MB**). Near the memory limit on Streamlit Cloud — "
+                "if it crashes, use the **Google Drive** source instead (streams one test at a time).")
+        try:
+            with st.spinner(f"Loading {size_mb:,.0f} MB…"):
+                df = load_data(uploaded, uploaded.name, uploaded.size)
+        except Exception as e:  # noqa: BLE001 — parse errors; OOM kills the process outright
+            st.error(f"Couldn't load this file ({type(e).__name__}: {e}). If it's very large, use "
+                     "the Google Drive source.")
+            st.stop()
     st.caption(f"Loaded **{len(df):,}** line items · **{df[COL_ORDER].nunique():,}** orders"
                if COL_ORDER in df.columns else f"Loaded {len(df):,} rows")
 
@@ -1675,7 +1812,10 @@ def main() -> None:
 
     tests = test_options(df)
     test_labels = build_test_labels(df, tests, vwo_acc, vwo_token)
-    test_choice = sb.selectbox("Test", [NO_TEST] + tests,
+    options = [NO_TEST] + tests
+    # When the data holds a single test (e.g. streamed from Drive), preselect it.
+    default_idx = 1 if len(tests) == 1 else 0
+    test_choice = sb.selectbox("Test", options, index=default_idx,
                                format_func=lambda t: test_labels.get(t, t))
     selected_test = None if test_choice == NO_TEST else test_choice
 

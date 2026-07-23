@@ -136,7 +136,23 @@ client_email = "...@....iam.gserviceaccount.com"
 # token_uri, private_key_id, client_id …
 ```
 
-## Very large exports (trim before uploading)
+## Very large exports — stream from Google Drive (no local step)
+
+On free Streamlit Cloud (~1 GB RAM) the file-uploader buffers the whole file in memory
+before the app runs, so an ~800 MB+ CSV crashes on upload. The **Google Drive** data source
+avoids that entirely — no local trimming, no paid tier:
+
+1. **Enable the Google Drive API** in the same Google Cloud project (you already enabled Sheets).
+2. **Share a Drive folder** (Viewer) with the service account (`…@….iam.gserviceaccount.com`)
+   and drop the full export CSV in it. (Optional: set `gdrive_folder_id` in secrets to prefill it.)
+3. In the app, pick **Data source → Google Drive**, choose the file, and enter the **test id**.
+
+The app then **streams** the CSV straight from Drive and keeps only that test's rows — it never
+holds the whole file, so peak memory stays a few hundred MB regardless of file size. You pick the
+test up front (from the VWO campaigns page or your notes); everything else works as usual on that
+test's slice. The VWO campaigns page needs no data source at all.
+
+## Very large exports (trim locally — alternative)
 
 Streamlit Community Cloud (~1 GB RAM) buffers the whole upload in memory before the app
 runs, so a full ~800 MB+ export can crash it on load. Use the local **`trim_export.py`**
