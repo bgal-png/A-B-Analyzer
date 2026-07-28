@@ -455,16 +455,18 @@ def vwo_active_days(data: dict) -> set:
             for ts, v in _vwo_per_day(data).items() if v > 0}
 
 
-def vwo_running_periods(data: dict) -> list[dict]:
-    """Reconstruct active (running) date spans from per-day visitor counts.
+def vwo_running_periods(data: dict, max_gap_days: int = 1) -> list[dict]:
+    """APPROXIMATE active date spans reconstructed from per-day visitor counts.
 
-    Days with no traffic (paused / out of quota) split the spans. Returns
-    [{start, end, days}] using day-start unix timestamps.
+    NOT VWO's real start/pause log (the API doesn't expose it) — a span is broken only
+    when there's a run of ≥ `max_gap_days`+1 consecutive zero-traffic days, so a bigger
+    `max_gap_days` bridges quiet days that weren't actually pauses. Returns
+    [{start, end, days}] (day-start unix ts); `days` counts days with traffic.
     """
     active = sorted(t for t, v in _vwo_per_day(data).items() if v > 0)
     periods: list[dict] = []
     for ts in active:
-        if periods and ts - periods[-1]["end"] <= 86400 * 1.5:  # contiguous day → same span
+        if periods and ts - periods[-1]["end"] <= 86400 * (max_gap_days + 0.5):
             periods[-1]["end"] = ts
             periods[-1]["days"] += 1
         else:
@@ -1185,13 +1187,14 @@ def render_vwo_page() -> None:
                     col.dataframe(device_styler(devt), use_container_width=True, hide_index=True)
                     download_button(devt, f"Download device split {cid}", f"vwo_dev_{cid}")
 
-        periods = vwo_running_periods(data)
+        periods = vwo_running_periods(data, max_gap_days=7)
         if periods:
             total = sum(p["days"] for p in periods)
-            with col.expander(f"Running periods · {len(periods)} span(s), {total} active days"):
-                st.caption("Reconstructed from daily traffic — gaps = paused / out of quota.")
+            with col.expander(f"Running periods (approx) · {total} days with traffic"):
                 st.markdown("\n".join(
                     f"- {fmt_date(p['start'])} → {fmt_date(p['end'])}  ·  {p['days']} d" for p in periods))
+                st.caption("⚠️ Approximate — inferred from daily traffic (gaps > 7 quiet days), not "
+                           "VWO's pause log. See the campaign's Activity history in VWO for exact times.")
 
 
 # --------------------------------------------------------------------------- #
@@ -1996,20 +1999,25 @@ def main() -> None:
         st.warning("No rows match the current filters.")
         st.stop()
 
-    # 🗓️ When did the test actually run? Reconstruct the running periods from VWO daily traffic
-    # (a test gets paused / runs out of quota, leaving gaps).
+    # 🗓️ Approximate running periods, reconstructed from VWO daily traffic. NOTE: the VWO API
+    # doesn't expose the real start/pause log, so this infers spans from days-with-traffic and
+    # bridges short quiet gaps — it won't exactly match VWO's campaign Activity history.
     if vwo_token and selected_test:
         cdata = fetch_vwo_campaign(str(vwo_acc), str(selected_test), vwo_token)
         if cdata and not cdata.get("_error"):
-            periods = vwo_running_periods(cdata)
-            if periods:
-                total = sum(p["days"] for p in periods)
-                with st.expander(f"🗓️ When test **{selected_test}** ran (VWO) — "
-                                 f"{len(periods)} period(s), {total} active days"):
-                    st.caption("Reconstructed from daily VWO traffic; gaps = paused / out of quota.")
-                    pdf = pd.DataFrame([{"From": fmt_date(p["start"]), "To": fmt_date(p["end"]),
-                                         "Days": p["days"]} for p in periods])
-                    st.dataframe(pdf, use_container_width=True, hide_index=True)
+            active_days = len(vwo_active_days(cdata))
+            with st.expander(f"🗓️ When test **{selected_test}** ran (approx from VWO traffic) — "
+                             f"{active_days} days with traffic"):
+                gap = st.slider("Merge gaps up to (days)", 1, 21, 7,
+                                help="Treat a pause only when there are more than this many "
+                                     "consecutive zero-traffic days. Higher = fewer, longer spans.")
+                periods = vwo_running_periods(cdata, max_gap_days=gap)
+                pdf = pd.DataFrame([{"From": fmt_date(p["start"]), "To": fmt_date(p["end"]),
+                                     "Days w/ traffic": p["days"]} for p in periods])
+                st.dataframe(pdf, use_container_width=True, hide_index=True)
+                st.caption("⚠️ **Approximate** — inferred from daily traffic, not VWO's pause log "
+                           "(the API doesn't expose it). For exact start/pause times, see the "
+                           "campaign's **Activity** history in VWO. Adjust the slider to match.")
 
     # ---- Views ----
     tab_totals, tab_variant, tab_pivot = st.tabs(["Totals", "Per-variant", "Custom pivot"])
