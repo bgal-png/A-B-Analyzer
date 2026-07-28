@@ -1996,6 +1996,21 @@ def main() -> None:
         st.warning("No rows match the current filters.")
         st.stop()
 
+    # 🗓️ When did the test actually run? Reconstruct the running periods from VWO daily traffic
+    # (a test gets paused / runs out of quota, leaving gaps).
+    if vwo_token and selected_test:
+        cdata = fetch_vwo_campaign(str(vwo_acc), str(selected_test), vwo_token)
+        if cdata and not cdata.get("_error"):
+            periods = vwo_running_periods(cdata)
+            if periods:
+                total = sum(p["days"] for p in periods)
+                with st.expander(f"🗓️ When test **{selected_test}** ran (VWO) — "
+                                 f"{len(periods)} period(s), {total} active days"):
+                    st.caption("Reconstructed from daily VWO traffic; gaps = paused / out of quota.")
+                    pdf = pd.DataFrame([{"From": fmt_date(p["start"]), "To": fmt_date(p["end"]),
+                                         "Days": p["days"]} for p in periods])
+                    st.dataframe(pdf, use_container_width=True, hide_index=True)
+
     # ---- Views ----
     tab_totals, tab_variant, tab_pivot = st.tabs(["Totals", "Per-variant", "Custom pivot"])
 
