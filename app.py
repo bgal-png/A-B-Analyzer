@@ -2259,7 +2259,11 @@ def main() -> None:
                     st.markdown("##### Device split — VWO only")
                     st.caption("VWO visitors / conversions / revenue for each device segment "
                                "(campaign-wide, all eshops). CR% = conversions ÷ visitors; "
-                               "Improvement % is VWO's relative improvement vs control.")
+                               "Improvement % is VWO's relative improvement vs control. "
+                               "⚠️ Device segments won't sum exactly to the campaign total — VWO "
+                               "counts unique visitors *per segment*, so a cross-device visitor is "
+                               "counted in both, and other/unknown devices in neither. The main "
+                               "table above holds the authoritative campaign-wide totals.")
                     # Two half-width tables side by side (mobile left, desktop right).
                     dev_cols = st.columns(2)
                     for (label, key), dcol in zip(
