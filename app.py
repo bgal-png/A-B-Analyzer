@@ -1020,6 +1020,8 @@ COLUMNS_TO_TICK = [
     "Payment name",
     "Jméno položky",
     "Month of order",
+    "Customer IP address",
+    "Customer email",
 ]
 
 RECOMMENDED_SETTINGS = """\
