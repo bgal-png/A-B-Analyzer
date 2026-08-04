@@ -156,10 +156,12 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
         res = _vwo_post(VWO_SEGMENT_URL.format(acc=account_id, cid=campaign_id), token, body)
         d = res.get("_data", res)  # the regional endpoint wraps the report in `_data`
         out: dict[str, dict] = {}
+        goal_conv: dict[str, dict] = {}
         for vgd in d.get("variationGoalData", []):
             g = str(vgd.get("goal"))
             vid = str(vgd.get("variation"))
             agg = vgd.get("aggregated", {})
+            goal_conv.setdefault(g, {})[vid] = agg.get("conversionCount")
             rec = out.setdefault(vid, {"visitors": 0, "conversions": 0,
                                        "revenue": None, "improvement": None})
             if g == str(primary_id):
@@ -170,7 +172,10 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
                 rec["improvement"] = round(med, 6) if med is not None else None  # fraction
             if revenue_id is not None and g == str(revenue_id) and "totalRevenue" in agg:
                 rec["revenue"] = round(float(agg.get("totalRevenue", 0)), 2)
-        return out or {"_error": "no segment data"}
+        if not out:
+            return {"_error": "no segment data"}
+        out["_goal_conv"] = goal_conv  # per-goal conversions for secondary-goal columns
+        return out
     except urllib.error.HTTPError as e:
         return {"_error": f"HTTP {e.code} {e.reason}"}
     except Exception as e:  # noqa: BLE001
@@ -314,28 +319,40 @@ def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
     """
     ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
     vids = sorted((k for k in seg if not k.startswith("_")), key=lambda x: (len(x), x))
+    secs = vwo_secondary_goals(data)           # per-device secondary goals (popup interactions…)
+    gc = seg.get("_goal_conv", {})
 
     rows, tot_v, tot_c, tot_r, any_rev = [], 0, 0, 0.0, False
+    tot_g = {gid: 0 for gid, _ in secs}
     for vid in vids:
         s = seg.get(vid, {})
         vis, con = s.get("visitors", 0), s.get("conversions", 0)
         cr = (con / vis) if vis else None  # fraction
         rev, is_ctrl = s.get("revenue"), vid in ctrl
-        rows.append({
+        row = {
             "Variant": f"{vid} (ctrl)" if is_ctrl else vid,
             "Visitors": vis, "VWO conv.": con,
             "Conv. rate %": round(cr, 6) if cr is not None else None,
             "Improvement %": None if is_ctrl else s.get("improvement"),
             "VWO revenue": rev,
-        })
+        }
+        for gid, nm in secs:
+            gv = gc.get(gid, {}).get(vid)
+            row[nm] = gv
+            if gv is not None:
+                tot_g[gid] += gv
+        rows.append(row)
         tot_v += vis
         tot_c += con
         if rev is not None:
             tot_r += rev
             any_rev = True
-    rows.append({"Variant": "TOTAL", "Visitors": tot_v, "VWO conv.": tot_c,
-                 "Conv. rate %": round(tot_c / tot_v, 6) if tot_v else None,
-                 "Improvement %": None, "VWO revenue": tot_r if any_rev else None})
+    total = {"Variant": "TOTAL", "Visitors": tot_v, "VWO conv.": tot_c,
+             "Conv. rate %": round(tot_c / tot_v, 6) if tot_v else None,
+             "Improvement %": None, "VWO revenue": tot_r if any_rev else None}
+    for gid, nm in secs:
+        total[nm] = tot_g[gid]
+    rows.append(total)
     return pd.DataFrame(rows)  # keep every metric column, even if a device has no revenue
 
 
@@ -529,6 +546,30 @@ def vwo_all_goals_table(data: dict) -> pd.DataFrame:
                 row[f"{gname} · exp.impr%"] = round(med, 6) if med is not None else None  # fraction
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def vwo_secondary_goals(data: dict) -> list:
+    """[(goal_id, short_name)] for non-primary, non-revenue goals (e.g. popup interactions).
+
+    Short name = the part after the last ' - ' in the goal name (so 'Invasive popup -
+    add to basket' → 'add to basket').
+    """
+    goals = data.get("goals", [])
+    pid = next((g.get("id") for g in goals if g.get("isPrimary")), None)
+    out = []
+    for g in goals:
+        if g.get("id") == pid or g.get("type") == "revenue":
+            continue
+        nm = str(g.get("name", "")).split(" - ")[-1].strip() or f"Goal {g.get('id')}"
+        out.append((str(g.get("id")), nm))
+    return out
+
+
+def vwo_goal_conversions(data: dict, goal_id: str) -> dict:
+    """{variation_id: conversions} for a goal, from the campaign report."""
+    g = next((x for x in data.get("goals", []) if str(x.get("id")) == str(goal_id)), None)
+    return ({str(v): d.get("conversionCount") for v, d in g.get("aggregatedData", {}).items()}
+            if g else {})
 
 # Columns we rely on. Missing ones degrade gracefully.
 COL_ORDER = "orderId"
@@ -2002,18 +2043,6 @@ def main() -> None:
     if vwo_token and selected_test:
         cdata = fetch_vwo_campaign(str(vwo_acc), str(selected_test), vwo_token)
         if cdata and not cdata.get("_error"):
-            # All VWO goals (primary + secondary) per variation, e.g. popup interactions.
-            goal_tbl = vwo_all_goals_table(cdata)
-            if len(goal_tbl.columns) > 2:  # more than Variation + Visitors → has goals
-                ng = sum(1 for c in goal_tbl.columns if c.endswith("· conv") or c.endswith("· rev"))
-                with st.expander(f"📊 All VWO goals for test **{selected_test}** — "
-                                 f"{ng} metric(s) per variation"):
-                    st.dataframe(vwo_styler(goal_tbl), use_container_width=True, hide_index=True)
-                    download_button(goal_tbl, f"Download VWO goals {selected_test}",
-                                    f"vwo_goals_{selected_test}")
-                    st.caption("Every goal's conversions per variation (primary + secondary), "
-                               "plus revenue and the primary goal's expected improvement %.")
-
             active_days = len(vwo_active_days(cdata))
             with st.expander(f"🗓️ When test **{selected_test}** ran (approx from VWO traffic) — "
                              f"{active_days} days with traffic"):
@@ -2085,9 +2114,21 @@ def main() -> None:
                         vdf["Variant"].map(lambda v: sum(rev.values()) if v == "TOTAL" else rev.get(str(v))),
                         errors="coerce"))
                     vwo_cols.append("VWO revenue")
+                # Secondary VWO goals (popup interactions etc.) as extra conversion columns.
+                next_idx = 6 if rev else 5
+                for gid, nm in vwo_secondary_goals(data):
+                    gconv = vwo_goal_conversions(data, gid)
+                    label = nm if nm not in vdf.columns else f"{nm} ({gid})"
+                    vdf.insert(next_idx, label, pd.to_numeric(
+                        vdf["Variant"].map(lambda v, gc=gconv: (sum(x or 0 for x in gc.values())
+                                           if v == "TOTAL" else gc.get(str(v)))),
+                        errors="coerce").astype("Int64"))
+                    vwo_cols.append(label)
+                    next_idx += 1
                 st.caption("🔵 tinted columns are from **VWO** (Visitors, VWO conv., Improvement % vs "
-                           "control, VWO revenue); the rest is from the **sales export**. Conv. rate % = "
-                           "Orders ÷ Visitors. VWO counts are campaign-wide — don't filter by a single project.")
+                           "control, VWO revenue, and any secondary goals); the rest is from the "
+                           "**sales export**. Conv. rate % = Orders ÷ Visitors. VWO counts are "
+                           "campaign-wide — don't filter by a single project.")
             else:
                 st.caption("⚠️ Couldn't fetch VWO data for this campaign (token/plan/campaign id).")
 
