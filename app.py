@@ -1967,6 +1967,10 @@ def main() -> None:
                        help="Drops orders paid via a Showroom payment method."):
             work = work[~work["_is_showroom"]]
 
+    # Snapshot the in-test rows (with _variant) BEFORE the team/IP filters remove them,
+    # so the Per-variant view can report how many orders each filter drops, per variant.
+    work_pre_excl = work
+
     # Team / internal test orders (matched on the customer email) — excluded by default.
     exclude_team = False
     if "_is_team" in df.columns and df["_is_team"].any():
@@ -2096,50 +2100,6 @@ def main() -> None:
                            "(the API doesn't expose it). For exact start/pause times, see the "
                            "campaign's **Activity** history in VWO. Adjust the slider to match.")
 
-    # ---- Excluded-orders audit: what the team-email and IP-cap filters remove ----
-    has_team = ("_is_team" in df.columns and "_team_domain" in df.columns
-                and df["_is_team"].any())
-    has_capped = ("_ip_rank" in df.columns and "_ip" in df.columns
-                  and (df["_ip_rank"] >= cap_n).any())
-    if (has_team or has_capped) and COL_ORDER in df.columns:
-        n_te = df.loc[df["_is_team"], COL_ORDER].nunique() if has_team else 0
-        n_ie = df.loc[df["_ip_rank"] >= cap_n, COL_ORDER].nunique() if has_capped else 0
-        with st.expander(f"🚫 Excluded orders — {n_te:,} by email domain, {n_ie:,} by IP cap"):
-            st.caption("Reflects the whole loaded export (all tests). These orders are dropped "
-                       "from every view and the Sheets export while the filter is on.")
-            ac1, ac2 = st.columns(2)
-            with ac1:
-                on = " (filter OFF — not excluded)" if not exclude_team else ""
-                st.markdown(f"**By team email domain** — {n_te:,} orders{on}")
-                if has_team:
-                    te = df.loc[df["_is_team"], [COL_ORDER, "_team_domain"]].drop_duplicates(COL_ORDER)
-                    g = (te.groupby("_team_domain", observed=True)[COL_ORDER].nunique()
-                         .rename("Orders").reset_index()
-                         .rename(columns={"_team_domain": "Email domain"})
-                         .sort_values("Orders", ascending=False))
-                    st.dataframe(g, use_container_width=True, hide_index=True)
-                    download_button(te.rename(columns={"_team_domain": "email_domain"}),
-                                    "Download email-excluded orders", "excl_email")
-                else:
-                    st.caption("None.")
-            with ac2:
-                on = " (filter OFF — not excluded)" if not cap_on else ""
-                st.markdown(f"**By IP cap (>{cap_n}/IP)** — {n_ie:,} orders{on}")
-                if has_capped:
-                    ie = df.loc[df["_ip_rank"] >= cap_n, [COL_ORDER, "_ip"]].drop_duplicates(COL_ORDER)
-                    tot = (df[[COL_ORDER, "_ip"]].drop_duplicates(COL_ORDER)
-                           .groupby("_ip", observed=True)[COL_ORDER].nunique())
-                    g2 = (ie.groupby("_ip", observed=True)[COL_ORDER].nunique()
-                          .rename("Orders excluded").reset_index())
-                    g2["Orders total"] = g2["_ip"].map(tot)
-                    g2 = (g2.rename(columns={"_ip": "IP"})[["IP", "Orders total", "Orders excluded"]]
-                          .sort_values("Orders excluded", ascending=False))
-                    st.dataframe(g2, use_container_width=True, hide_index=True)
-                    download_button(ie.rename(columns={"_ip": "ip_address"}),
-                                    "Download IP-excluded orders", "excl_ip")
-                else:
-                    st.caption("None.")
-
     # ---- Views ----
     tab_totals, tab_variant, tab_pivot = st.tabs(["Totals", "Per-variant", "Custom pivot"])
 
@@ -2221,6 +2181,51 @@ def main() -> None:
                                            **{"background-color": "rgba(70,130,255,0.13)"})
         st.dataframe(styler, use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
+
+        # Orders the exclusion filters removed, per variant (audit of the team-email and
+        # IP-cap drops). Counts DISTINCT orders from the in-test rows before filtering.
+        pre = work_pre_excl
+        if (exclude_team or cap_on) and "_variant" in pre.columns and COL_ORDER in pre.columns:
+            team_m = (pre["_is_team"] if (exclude_team and "_is_team" in pre.columns)
+                      else pd.Series(False, index=pre.index))
+            ip_m = (pre["_ip_rank"] >= cap_n if (cap_on and "_ip_rank" in pre.columns)
+                    else pd.Series(False, index=pre.index))
+
+            def _drop_counts(idx) -> dict:
+                sub = pre.loc[idx]
+                return {"By team email": sub.loc[team_m.loc[idx], COL_ORDER].nunique(),
+                        "By IP cap": sub.loc[ip_m.loc[idx], COL_ORDER].nunique(),
+                        "Total dropped": sub.loc[(team_m | ip_m).loc[idx], COL_ORDER].nunique()}
+
+            variants = sorted(pre["_variant"].unique(), key=lambda x: (len(x), x))
+            rows = [{"Variant": v, **_drop_counts(pre["_variant"] == v)} for v in variants]
+            rows.append({"Variant": "TOTAL", **_drop_counts(pre.index)})
+            ddf = pd.DataFrame(rows)
+
+            if ddf["Total dropped"].iloc[-1] > 0:
+                st.markdown("#### Dropped orders (per variant)")
+                scope = f"test {selected_test}" if selected_test else "the current selection"
+                st.caption(f"Orders removed from the table above by the exclusion filters, for {scope}. "
+                           "**By team email** = internal/team emails; "
+                           f"**By IP cap** = beyond {cap_n} orders/IP. An order hit by both is counted "
+                           "in each column but once in Total.")
+                st.dataframe(ddf, use_container_width=True, hide_index=True)
+                download_button(ddf, "Download dropped-per-variant", "dropped_variant")
+
+                # Order-level detail: which domain / IP triggered each drop.
+                dc1, dc2 = st.columns(2)
+                if exclude_team and "_team_domain" in pre.columns and team_m.any():
+                    te = (pre.loc[team_m, ["_variant", COL_ORDER, "_team_domain"]]
+                          .drop_duplicates(COL_ORDER)
+                          .rename(columns={"_variant": "Variant", "_team_domain": "email_domain"}))
+                    with dc1:
+                        download_button(te, "Download email-dropped detail", "dropped_email")
+                if cap_on and "_ip" in pre.columns and ip_m.any():
+                    ie = (pre.loc[ip_m, ["_variant", COL_ORDER, "_ip"]]
+                          .drop_duplicates(COL_ORDER)
+                          .rename(columns={"_variant": "Variant", "_ip": "ip_address"}))
+                    with dc2:
+                        download_button(ie, "Download IP-dropped detail", "dropped_ip")
 
         # 📤 Push the per-variant numbers into the finalization Google Sheet's
         # "Pro porovnání z Analyzeru (BG)" block (routed by each tab's B1 campaign link).
