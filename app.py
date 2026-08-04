@@ -309,8 +309,8 @@ def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
 
     Columns: Variant, Visitors, VWO conv., Conv. rate %, Improvement %, VWO revenue, + TOTAL.
     Improvement % is VWO's relativeImprovementRate (median) vs control; VWO revenue is the
-    revenue goal's totalRevenue for this device. The revenue column is dropped if the
-    campaign has no revenue goal.
+    revenue goal's totalRevenue for this device. All metric columns are always shown (blank
+    where VWO has no value), so every metric is visible.
     """
     ctrl = {str(v["id"]) for v in data.get("variations", []) if v.get("isControl")}
     vids = sorted((k for k in seg if not k.startswith("_")), key=lambda x: (len(x), x))
@@ -336,10 +336,7 @@ def vwo_device_one_table(data: dict, seg: dict) -> pd.DataFrame:
     rows.append({"Variant": "TOTAL", "Visitors": tot_v, "VWO conv.": tot_c,
                  "Conv. rate %": round(tot_c / tot_v, 6) if tot_v else None,
                  "Improvement %": None, "VWO revenue": tot_r if any_rev else None})
-    df = pd.DataFrame(rows)
-    if not any_rev:
-        df = df.drop(columns=["VWO revenue"])  # campaign has no revenue goal
-    return df
+    return pd.DataFrame(rows)  # keep every metric column, even if a device has no revenue
 
 
 def device_variant_styler(tbl: pd.DataFrame):
