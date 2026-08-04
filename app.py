@@ -156,12 +156,10 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
         res = _vwo_post(VWO_SEGMENT_URL.format(acc=account_id, cid=campaign_id), token, body)
         d = res.get("_data", res)  # the regional endpoint wraps the report in `_data`
         out: dict[str, dict] = {}
-        goal_conv: dict[str, dict] = {}
         for vgd in d.get("variationGoalData", []):
             g = str(vgd.get("goal"))
             vid = str(vgd.get("variation"))
             agg = vgd.get("aggregated", {})
-            goal_conv.setdefault(g, {})[vid] = agg.get("conversionCount")
             rec = out.setdefault(vid, {"visitors": 0, "conversions": 0,
                                        "revenue": None, "improvement": None})
             if g == str(primary_id):
@@ -172,14 +170,40 @@ def fetch_vwo_segment(account_id: str, campaign_id: str, token: str, devices: tu
                 rec["improvement"] = round(med, 6) if med is not None else None  # fraction
             if revenue_id is not None and g == str(revenue_id) and "totalRevenue" in agg:
                 rec["revenue"] = round(float(agg.get("totalRevenue", 0)), 2)
-        if not out:
-            return {"_error": "no segment data"}
-        out["_goal_conv"] = goal_conv  # per-goal conversions for secondary-goal columns
-        return out
+        # NOTE: this segment call only computes conversionCount reliably for the PRIMARY goal;
+        # secondary goals' counts here are wrong, so per-device secondary goals are fetched
+        # separately (fetch_vwo_seg_goal, one call per goal).
+        return out or {"_error": "no segment data"}
     except urllib.error.HTTPError as e:
         return {"_error": f"HTTP {e.code} {e.reason}"}
     except Exception as e:  # noqa: BLE001
         return {"_error": f"{type(e).__name__}: {e}"}
+
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=128)
+def fetch_vwo_seg_goal(account_id: str, campaign_id: str, token: str, devices: tuple,
+                       goal_id, start_ts, end_ts) -> dict:
+    """{variation_id: conversions} for ONE goal within a device segment.
+
+    Requests the goal as the sole metric (`goals`=<id>) — the segment endpoint only
+    computes an accurate conversionCount for the requested goal, so secondary goals must
+    each be fetched on their own to get correct per-device numbers.
+    """
+    body = {
+        "goals": str(goal_id), "id": int(campaign_id),
+        "startTime": int(start_ts), "endTime": int(end_ts),
+        "segments": {"id": "dev", "type": "custom", "partialSegments": [
+            {"operator": 11, "rOperandValue": list(devices),
+             "id": "18-VwoPostWebsite", "queryElementType": "partialQuery"}]},
+        "__preventNotifyOnError": True, "isGuardrail": False,
+    }
+    try:
+        res = _vwo_post(VWO_SEGMENT_URL.format(acc=account_id, cid=campaign_id), token, body)
+        d = res.get("_data", res)
+        return {str(v.get("variation")): v.get("aggregated", {}).get("conversionCount")
+                for v in d.get("variationGoalData", []) if str(v.get("goal")) == str(goal_id)}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
@@ -2218,15 +2242,20 @@ def main() -> None:
                 s_ts = dr.get("limitingStartTime") or dr.get("startTime")
                 e_ts = dr.get("limitingEndTime") or dr.get("endTime")
                 if pid and s_ts and e_ts:
+                    dev_map = {"mobile": ("mobile", "tablet"), "desktop": ("desktop",)}
+                    secs = vwo_secondary_goals(ddata)
                     with st.spinner("Fetching device split from VWO…"):
-                        segs = {
-                            "mobile": fetch_vwo_segment(str(acc), str(selected_test), vwo_token,
-                                                        ("mobile", "tablet"), goal_ids, pid,
-                                                        rev_id, s_ts, e_ts),
-                            "desktop": fetch_vwo_segment(str(acc), str(selected_test), vwo_token,
-                                                         ("desktop",), goal_ids, pid,
-                                                         rev_id, s_ts, e_ts),
-                        }
+                        segs = {}
+                        for key, devs in dev_map.items():
+                            seg = fetch_vwo_segment(str(acc), str(selected_test), vwo_token,
+                                                    devs, goal_ids, pid, rev_id, s_ts, e_ts)
+                            # secondary goals need a dedicated segment call each (accurate counts)
+                            if isinstance(seg, dict) and not seg.get("_error") and secs:
+                                seg["_goal_conv"] = {
+                                    gid: fetch_vwo_seg_goal(str(acc), str(selected_test), vwo_token,
+                                                            devs, gid, s_ts, e_ts)
+                                    for gid, _ in secs}
+                            segs[key] = seg
                     st.markdown("##### Device split — VWO only")
                     st.caption("VWO visitors / conversions / revenue for each device segment "
                                "(campaign-wide, all eshops). CR% = conversions ÷ visitors; "
