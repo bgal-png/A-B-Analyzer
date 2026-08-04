@@ -2002,6 +2002,18 @@ def main() -> None:
     if vwo_token and selected_test:
         cdata = fetch_vwo_campaign(str(vwo_acc), str(selected_test), vwo_token)
         if cdata and not cdata.get("_error"):
+            # All VWO goals (primary + secondary) per variation, e.g. popup interactions.
+            goal_tbl = vwo_all_goals_table(cdata)
+            if len(goal_tbl.columns) > 2:  # more than Variation + Visitors → has goals
+                ng = sum(1 for c in goal_tbl.columns if c.endswith("· conv") or c.endswith("· rev"))
+                with st.expander(f"📊 All VWO goals for test **{selected_test}** — "
+                                 f"{ng} metric(s) per variation"):
+                    st.dataframe(vwo_styler(goal_tbl), use_container_width=True, hide_index=True)
+                    download_button(goal_tbl, f"Download VWO goals {selected_test}",
+                                    f"vwo_goals_{selected_test}")
+                    st.caption("Every goal's conversions per variation (primary + secondary), "
+                               "plus revenue and the primary goal's expected improvement %.")
+
             active_days = len(vwo_active_days(cdata))
             with st.expander(f"🗓️ When test **{selected_test}** ran (approx from VWO traffic) — "
                              f"{active_days} days with traffic"):
