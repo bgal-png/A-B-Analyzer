@@ -20,7 +20,12 @@ export, then copy or download clean figures for your master sheet.
   dropped from every view and the Sheets export. The email column is auto-detected (any
   column whose name contains "mail"); the team is defined by `TEAM_EMAILS` (exact addresses)
   and/or `TEAM_EMAIL_DOMAINS` (whole domains) in [`app.py`](app.py). The raw email is used
-  only for this flag and then discarded (never stored or exported).
+  only for this flag and then discarded (only the domain is kept, for the audit view below).
+- **Excluded-orders audit.** A **🚫 Excluded orders** panel (Sales analyzer) lists what the two
+  exclusion filters remove: orders dropped **by team email domain** (grouped by domain) and,
+  separately, orders dropped **by the IP cap** (grouped by IP, with each IP's total vs excluded
+  order count). Each side has a **Download** button (order id + domain / IP). Reflects the whole
+  loaded export; a section is labelled *filter OFF* when its filter isn't currently applied.
 - **Private brands** = the `PRIVATE_BRANDS` list (any product type), read from the
   authoritative `categoriesData-brand` column when present (fallback: accent-/case-
   insensitive item-name matching). The per-variant private split flags orders that

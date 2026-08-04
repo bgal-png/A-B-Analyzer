@@ -699,6 +699,11 @@ CAT_COLUMNS = {
     "orderMonth", "orderDay", "categoriesData-brand", "categoriesData-items-type",
 }
 
+# Bump when _derive_columns changes its output schema. Referenced inside the cached
+# loaders so their source hash (and thus st.cache_data key) changes → stale cached
+# DataFrames from an older schema are re-parsed instead of served.
+_DERIVE_SCHEMA_VERSION = 2
+
 
 @st.cache_data(show_spinner=False, max_entries=1)
 def load_data(_file, name: str, size: int) -> pd.DataFrame:
@@ -708,6 +713,7 @@ def load_data(_file, name: str, size: int) -> pd.DataFrame:
     name+size). Avoids copying the raw bytes (getvalue() + BytesIO would each duplicate
     an ~900 MB upload, blowing past memory on large files).
     """
+    _ = _DERIVE_SCHEMA_VERSION  # part of the cache key (see constant above)
     # Read our known columns plus any email column (auto-detected by name) for team-order exclusion.
     wanted = lambda c: (str(c).strip() in USED_COLUMNS) or ("mail" in str(c).strip().lower())
     try:
@@ -795,9 +801,13 @@ def _derive_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["_is_team"] = em.isin(team)
         if doms:
             df["_is_team"] = df["_is_team"] | em.str.endswith(doms)
-        df = df.drop(columns=[email_col])  # raw email not needed downstream
+        # Keep the domain of team orders (for the excluded-orders audit); raw email dropped.
+        dom = em.str.rsplit("@", n=1).str[-1]
+        df["_team_domain"] = dom.where(df["_is_team"], "").astype("category")
+        df = df.drop(columns=[email_col])
     else:
         df["_is_team"] = False
+        df["_team_domain"] = ""
 
     # Per-order rank within its IP (0 = first order that IP placed, by order time). Powers the
     # "cap orders per IP" filter. Ranks distinct orders (not the duplicate line rows); orders
@@ -813,9 +823,11 @@ def _derive_columns(df: pd.DataFrame) -> pd.DataFrame:
         orders["_r"] = rank
         df["_ip_rank"] = (df[COL_ORDER].map(orders.set_index(COL_ORDER)["_r"])
                           .fillna(0).astype("int32"))
+        df["_ip"] = df["customerIpAddress"].astype("category")  # kept for the audit view
         df = df.drop(columns=["customerIpAddress"])
     else:
         df["_ip_rank"] = 0
+        df["_ip"] = ""
 
     # Showroom-payment flag, precomputed once (avoids a full-column string scan per rerun).
     if "payment" in df.columns:
@@ -1433,6 +1445,7 @@ def load_from_drive(file_id: str, modified: str, test_id: str) -> pd.DataFrame |
     `modified` is part of the cache key so a re-uploaded file re-reads. Returns None if the
     test has no rows in the file.
     """
+    _ = _DERIVE_SCHEMA_VERSION  # part of the cache key (see constant above)
     wanted = lambda c: (str(c).strip() in USED_COLUMNS) or ("mail" in str(c).strip().lower())
     tok = re.escape(str(test_id))
     pat = re.compile(rf"(?:^|\|){tok}(?:\||$)")
@@ -2082,6 +2095,50 @@ def main() -> None:
                 st.caption("⚠️ **Approximate** — inferred from daily traffic, not VWO's pause log "
                            "(the API doesn't expose it). For exact start/pause times, see the "
                            "campaign's **Activity** history in VWO. Adjust the slider to match.")
+
+    # ---- Excluded-orders audit: what the team-email and IP-cap filters remove ----
+    has_team = ("_is_team" in df.columns and "_team_domain" in df.columns
+                and df["_is_team"].any())
+    has_capped = ("_ip_rank" in df.columns and "_ip" in df.columns
+                  and (df["_ip_rank"] >= cap_n).any())
+    if (has_team or has_capped) and COL_ORDER in df.columns:
+        n_te = df.loc[df["_is_team"], COL_ORDER].nunique() if has_team else 0
+        n_ie = df.loc[df["_ip_rank"] >= cap_n, COL_ORDER].nunique() if has_capped else 0
+        with st.expander(f"🚫 Excluded orders — {n_te:,} by email domain, {n_ie:,} by IP cap"):
+            st.caption("Reflects the whole loaded export (all tests). These orders are dropped "
+                       "from every view and the Sheets export while the filter is on.")
+            ac1, ac2 = st.columns(2)
+            with ac1:
+                on = " (filter OFF — not excluded)" if not exclude_team else ""
+                st.markdown(f"**By team email domain** — {n_te:,} orders{on}")
+                if has_team:
+                    te = df.loc[df["_is_team"], [COL_ORDER, "_team_domain"]].drop_duplicates(COL_ORDER)
+                    g = (te.groupby("_team_domain", observed=True)[COL_ORDER].nunique()
+                         .rename("Orders").reset_index()
+                         .rename(columns={"_team_domain": "Email domain"})
+                         .sort_values("Orders", ascending=False))
+                    st.dataframe(g, use_container_width=True, hide_index=True)
+                    download_button(te.rename(columns={"_team_domain": "email_domain"}),
+                                    "Download email-excluded orders", "excl_email")
+                else:
+                    st.caption("None.")
+            with ac2:
+                on = " (filter OFF — not excluded)" if not cap_on else ""
+                st.markdown(f"**By IP cap (>{cap_n}/IP)** — {n_ie:,} orders{on}")
+                if has_capped:
+                    ie = df.loc[df["_ip_rank"] >= cap_n, [COL_ORDER, "_ip"]].drop_duplicates(COL_ORDER)
+                    tot = (df[[COL_ORDER, "_ip"]].drop_duplicates(COL_ORDER)
+                           .groupby("_ip", observed=True)[COL_ORDER].nunique())
+                    g2 = (ie.groupby("_ip", observed=True)[COL_ORDER].nunique()
+                          .rename("Orders excluded").reset_index())
+                    g2["Orders total"] = g2["_ip"].map(tot)
+                    g2 = (g2.rename(columns={"_ip": "IP"})[["IP", "Orders total", "Orders excluded"]]
+                          .sort_values("Orders excluded", ascending=False))
+                    st.dataframe(g2, use_container_width=True, hide_index=True)
+                    download_button(ie.rename(columns={"_ip": "ip_address"}),
+                                    "Download IP-excluded orders", "excl_ip")
+                else:
+                    st.caption("None.")
 
     # ---- Views ----
     tab_totals, tab_variant, tab_pivot = st.tabs(["Totals", "Per-variant", "Custom pivot"])
