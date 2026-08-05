@@ -652,12 +652,18 @@ PRIVATE_BRANDS = [
 # Add exact addresses to TEAM_EMAILS, and/or whole domains to TEAM_EMAIL_DOMAINS
 # (e.g. "alensa.eu" excludes every @alensa.eu order). Case-insensitive.
 TEAM_EMAILS: list[str] = [
-    # add specific addresses here if any test orders use a non-alensa.eu email
+    # add specific addresses here if any test orders use a non-company email
 ]
+# Exact internal/brand domains (whole domain must match).
 TEAM_EMAIL_DOMAINS: list[str] = [
-    "alensa.eu",   # internal/team test orders on the company domains
     "videt.ro",
     "adrial.eu",
+]
+# Domain PREFIXES — matches every Alensa country domain (alensa.eu, alensa.cz,
+# alensa.sk, alensa.pl, alensa.de, alensa.hu, …) so team test orders on any eshop
+# are caught, not just alensa.eu.
+TEAM_EMAIL_DOMAIN_PREFIXES: list[str] = [
+    "alensa.",
 ]
 
 
@@ -702,7 +708,7 @@ CAT_COLUMNS = {
 # Bump when _derive_columns changes its output schema. Referenced inside the cached
 # loaders so their source hash (and thus st.cache_data key) changes → stale cached
 # DataFrames from an older schema are re-parsed instead of served.
-_DERIVE_SCHEMA_VERSION = 2
+_DERIVE_SCHEMA_VERSION = 3
 
 
 @st.cache_data(show_spinner=False, max_entries=1)
@@ -796,14 +802,16 @@ def _derive_columns(df: pd.DataFrame) -> pd.DataFrame:
     email_col = next((c for c in df.columns if "mail" in c.lower()), None)
     if email_col is not None:
         em = df[email_col].astype(str).str.strip().str.lower()
-        team = {e.strip().lower() for e in TEAM_EMAILS if e.strip()}
-        doms = tuple("@" + d.strip().lower().lstrip("@") for d in TEAM_EMAIL_DOMAINS if d.strip())
-        df["_is_team"] = em.isin(team)
-        if doms:
-            df["_is_team"] = df["_is_team"] | em.str.endswith(doms)
-        # Keep the domain of team orders (for the excluded-orders audit); raw email dropped.
         dom = em.str.rsplit("@", n=1).str[-1]
-        df["_team_domain"] = dom.where(df["_is_team"], "").astype("category")
+        team = {e.strip().lower() for e in TEAM_EMAILS if e.strip()}
+        exact = {d.strip().lower().lstrip("@") for d in TEAM_EMAIL_DOMAINS if d.strip()}
+        prefixes = tuple(p.strip().lower() for p in TEAM_EMAIL_DOMAIN_PREFIXES if p.strip())
+        is_team = em.isin(team) | dom.isin(exact)
+        if prefixes:
+            is_team = is_team | dom.str.startswith(prefixes)
+        df["_is_team"] = is_team
+        # Keep the domain of team orders (for the excluded-orders audit); raw email dropped.
+        df["_team_domain"] = dom.where(is_team, "").astype("category")
         df = df.drop(columns=[email_col])
     else:
         df["_is_team"] = False

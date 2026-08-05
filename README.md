@@ -18,8 +18,10 @@ export, then copy or download clean figures for your master sheet.
   figures and the Sheets export; VWO visitor counts are unaffected.
 - **Exclude team / test orders** (default on): orders placed with an internal email are
   dropped from every view and the Sheets export. The email column is auto-detected (any
-  column whose name contains "mail"); the team is defined by `TEAM_EMAILS` (exact addresses)
-  and/or `TEAM_EMAIL_DOMAINS` (whole domains) in [`app.py`](app.py). The raw email is used
+  column whose name contains "mail"); the team is defined by `TEAM_EMAILS` (exact addresses),
+  `TEAM_EMAIL_DOMAINS` (whole domains, e.g. `videt.ro`), and `TEAM_EMAIL_DOMAIN_PREFIXES`
+  (domain prefixes — `alensa.` catches every Alensa country domain: alensa.eu, alensa.cz,
+  alensa.sk, …) in [`app.py`](app.py). The raw email is used
   only for this flag and then discarded (only the domain is kept, for the audit view below).
 - **Dropped-orders audit (per variant).** Below the Per-variant table, a **Dropped orders (per
   variant)** table shows how many orders each exclusion filter removed, per variant (+ TOTAL):
