@@ -25,8 +25,9 @@ export, then copy or download clean figures for your master sheet.
   only for this flag and then discarded (only the domain is kept, for the audit view below).
 - **Dropped-orders audit (per variant).** Below the Per-variant table, a **Dropped orders (per
   variant)** table shows how many orders each exclusion filter removed, per variant (+ TOTAL):
-  **By team email**, **By IP cap** (beyond N/IP), and **Total dropped** (an order hit by both is
-  counted in each column but once in Total). Scoped to the selected test and the active filters.
+  **By team email**, **By IP cap** (beyond N/IP), **By showroom** (showroom-payment orders, when
+  that filter is on), and **Total dropped** (an order hit by more than one is counted in each
+  column but once in Total). Scoped to the selected test and the active filters.
   Two **Download** buttons give the order-level detail — email-dropped (variant, order, domain)
   and IP-dropped (variant, order, IP). The table is hidden when nothing is dropped.
 - **Private brands** = the `PRIVATE_BRANDS` list (any product type), read from the

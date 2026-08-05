@@ -1967,17 +1967,19 @@ def main() -> None:
     if COL_FINAL in df.columns and sb.checkbox("Final orders only", value=False):
         work = work[work[COL_FINAL] == "1"]
 
+    # Snapshot the in-test rows (with _variant) BEFORE the showroom/team/IP filters remove
+    # them, so the Per-variant view can report how many orders each filter drops, per variant.
+    work_pre_excl = work
+
     # Showroom orders (paid via a Showroom payment method) — offer to exclude.
+    exclude_showroom = False
     if "_is_showroom" in df.columns and df["_is_showroom"].any():
         n_sr = (df.loc[df["_is_showroom"], COL_ORDER].nunique()
                 if COL_ORDER in df.columns else int(df["_is_showroom"].sum()))
-        if sb.checkbox(f"Exclude showroom orders ({n_sr:,})", value=False,
-                       help="Drops orders paid via a Showroom payment method."):
+        exclude_showroom = sb.checkbox(f"Exclude showroom orders ({n_sr:,})", value=False,
+                                       help="Drops orders paid via a Showroom payment method.")
+        if exclude_showroom:
             work = work[~work["_is_showroom"]]
-
-    # Snapshot the in-test rows (with _variant) BEFORE the team/IP filters remove them,
-    # so the Per-variant view can report how many orders each filter drops, per variant.
-    work_pre_excl = work
 
     # Team / internal test orders (matched on the customer email) — excluded by default.
     exclude_team = False
@@ -2193,17 +2195,19 @@ def main() -> None:
         # Orders the exclusion filters removed, per variant (audit of the team-email and
         # IP-cap drops). Counts DISTINCT orders from the in-test rows before filtering.
         pre = work_pre_excl
-        if (exclude_team or cap_on) and "_variant" in pre.columns and COL_ORDER in pre.columns:
-            team_m = (pre["_is_team"] if (exclude_team and "_is_team" in pre.columns)
-                      else pd.Series(False, index=pre.index))
-            ip_m = (pre["_ip_rank"] >= cap_n if (cap_on and "_ip_rank" in pre.columns)
-                    else pd.Series(False, index=pre.index))
+        if ((exclude_team or cap_on or exclude_showroom)
+                and "_variant" in pre.columns and COL_ORDER in pre.columns):
+            _F = pd.Series(False, index=pre.index)
+            team_m = pre["_is_team"] if (exclude_team and "_is_team" in pre.columns) else _F
+            ip_m = (pre["_ip_rank"] >= cap_n) if (cap_on and "_ip_rank" in pre.columns) else _F
+            sr_m = pre["_is_showroom"] if (exclude_showroom and "_is_showroom" in pre.columns) else _F
 
             def _drop_counts(idx) -> dict:
                 sub = pre.loc[idx]
                 return {"By team email": sub.loc[team_m.loc[idx], COL_ORDER].nunique(),
                         "By IP cap": sub.loc[ip_m.loc[idx], COL_ORDER].nunique(),
-                        "Total dropped": sub.loc[(team_m | ip_m).loc[idx], COL_ORDER].nunique()}
+                        "By showroom": sub.loc[sr_m.loc[idx], COL_ORDER].nunique(),
+                        "Total dropped": sub.loc[(team_m | ip_m | sr_m).loc[idx], COL_ORDER].nunique()}
 
             variants = sorted(pre["_variant"].unique(), key=lambda x: (len(x), x))
             rows = [{"Variant": v, **_drop_counts(pre["_variant"] == v)} for v in variants]
@@ -2215,8 +2219,9 @@ def main() -> None:
                 scope = f"test {selected_test}" if selected_test else "the current selection"
                 st.caption(f"Orders removed from the table above by the exclusion filters, for {scope}. "
                            "**By team email** = internal/team emails; "
-                           f"**By IP cap** = beyond {cap_n} orders/IP. An order hit by both is counted "
-                           "in each column but once in Total.")
+                           f"**By IP cap** = beyond {cap_n} orders/IP; "
+                           "**By showroom** = showroom-payment orders (only when that filter is on). "
+                           "An order hit by more than one is counted in each column but once in Total.")
                 st.dataframe(ddf, use_container_width=True, hide_index=True)
                 download_button(ddf, "Download dropped-per-variant", "dropped_variant")
 
