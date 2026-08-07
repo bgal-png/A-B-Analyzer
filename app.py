@@ -1847,7 +1847,8 @@ def _load_sales_from_drive() -> pd.DataFrame:
 
 
 def main() -> None:
-    st.set_page_config(page_title="A/B Sales Analyzer", layout="wide")
+    st.set_page_config(page_title="A/B Sales Analyzer", layout="wide",
+                       initial_sidebar_state="expanded")
     disable_clear_cache_shortcut()
     head_l, head_r = st.columns([4, 1], vertical_alignment="center")
     head_l.title("A/B Sales Analyzer")
@@ -1857,9 +1858,11 @@ def main() -> None:
             render_copy_list(COLUMNS_TO_TICK)
             st.markdown(RECOMMENDED_SETTINGS)
 
-    section = st.sidebar.radio("Section", ["📊 Sales analyzer", "🧪 VWO campaigns"])
+    PAGES = ["📊 Overview", "📈 Per-variant", "🚫 Excluded orders",
+             "🧮 Custom pivot", "📤 Google Sheets", "🧪 VWO campaigns"]
+    page = st.sidebar.radio("Page", PAGES)
     st.sidebar.divider()
-    if section.endswith("VWO campaigns"):
+    if page.endswith("VWO campaigns"):
         render_vwo_page()
         return
 
@@ -1914,7 +1917,10 @@ def main() -> None:
         vwo_token, vwo_acc = st.secrets.get("vwo_token"), st.secrets.get("vwo_account_id", "717496")
     except Exception:
         vwo_token, vwo_acc = None, "717496"
+    acc = str(vwo_acc)
 
+    sb.divider()
+    sb.markdown("**🎯 Test & variant**")
     tests = test_options(df)
     test_labels = build_test_labels(df, tests, vwo_acc, vwo_token)
     options = [NO_TEST] + tests
@@ -1974,6 +1980,8 @@ def main() -> None:
             else:
                 sb.warning("Couldn't fetch VWO running dates.")
 
+    sb.divider()
+    sb.markdown("**🚫 Exclusions & order state**")
     # Order state. Cancelled exclusion is applied last so the Per-variant tab can
     # still see cancelled rows to compute the Storno count.
     exclude_cancelled = (sb.checkbox(
@@ -2034,6 +2042,8 @@ def main() -> None:
         exp_mask &= df["_ip_rank"] < cap_n
     report_df = df[exp_mask] if not exp_mask.all() else df
 
+    sb.divider()
+    sb.markdown("**🧫 Product filters**")
     # Item type. Selection stored now and applied to work below. In Per-variant it
     # constrains revenue (via _is_product) but never the margin, which spans all lines.
     item_keep = None
@@ -2110,7 +2120,7 @@ def main() -> None:
     # 🗓️ Approximate running periods, reconstructed from VWO daily traffic. NOTE: the VWO API
     # doesn't expose the real start/pause log, so this infers spans from days-with-traffic and
     # bridges short quiet gaps — it won't exactly match VWO's campaign Activity history.
-    if vwo_token and selected_test:
+    if page.endswith("Overview") and vwo_token and selected_test:
         cdata = fetch_vwo_campaign(str(vwo_acc), str(selected_test), vwo_token)
         if cdata and not cdata.get("_error"):
             active_days = len(vwo_active_days(cdata))
@@ -2127,10 +2137,10 @@ def main() -> None:
                            "(the API doesn't expose it). For exact start/pause times, see the "
                            "campaign's **Activity** history in VWO. Adjust the slider to match.")
 
-    # ---- Views ----
-    tab_totals, tab_variant, tab_pivot = st.tabs(["Totals", "Per-variant", "Custom pivot"])
+    # ---- Views: the sidebar page menu selects which one renders ----
 
-    with tab_totals:
+    if page.endswith("Overview"):
+        st.subheader("📊 Overview — totals")
         m = metrics_for(work, use_gross, profit_col)
         cols = st.columns(len(m))
         for c, (k, v) in zip(cols, m.items()):
@@ -2139,7 +2149,8 @@ def main() -> None:
         st.dataframe(style_money(totals_df), use_container_width=True, hide_index=True)
         download_button(totals_df, "Download totals", "totals")
 
-    with tab_variant:
+    elif page.endswith("Per-variant"):
+        st.subheader("📈 Per-variant")
         # Computed from work_all so Storno (cancelled) is available per variant.
         def variant_table(src: pd.DataFrame) -> pd.DataFrame:
             rows = [{"Variant": var, **eval_row(grp, use_gross, profit_col, exclude_cancelled)}
@@ -2155,11 +2166,6 @@ def main() -> None:
         vdf = variant_table(work_all)
 
         # VWO visitors + conversion rate (orders ÷ visitors), if a token is configured.
-        try:
-            vwo_token = st.secrets.get("vwo_token")
-            acc = st.secrets.get("vwo_account_id", "717496")
-        except Exception:
-            vwo_token, acc = None, "717496"
         vwo_cols: list[str] = []
         if vwo_token and selected_test:
             data = fetch_vwo_campaign(str(acc), str(selected_test), vwo_token)
@@ -2218,54 +2224,6 @@ def main() -> None:
         st.dataframe(styler, use_container_width=True, hide_index=True)
         download_button(vdf, "Download per-variant", "per_variant")
 
-        # Orders the exclusion filters removed, per variant (audit of the team-email and
-        # IP-cap drops). Counts DISTINCT orders from the in-test rows before filtering.
-        pre = work_pre_excl
-        if ((exclude_team or cap_on or exclude_showroom)
-                and "_variant" in pre.columns and COL_ORDER in pre.columns):
-            _F = pd.Series(False, index=pre.index)
-            team_m = pre["_is_team"] if (exclude_team and "_is_team" in pre.columns) else _F
-            ip_m = (pre["_ip_rank"] >= cap_n) if (cap_on and "_ip_rank" in pre.columns) else _F
-            sr_m = pre["_is_showroom"] if (exclude_showroom and "_is_showroom" in pre.columns) else _F
-
-            def _drop_counts(idx) -> dict:
-                sub = pre.loc[idx]
-                return {"By team email": sub.loc[team_m.loc[idx], COL_ORDER].nunique(),
-                        "By IP cap": sub.loc[ip_m.loc[idx], COL_ORDER].nunique(),
-                        "By showroom": sub.loc[sr_m.loc[idx], COL_ORDER].nunique(),
-                        "Total dropped": sub.loc[(team_m | ip_m | sr_m).loc[idx], COL_ORDER].nunique()}
-
-            variants = sorted(pre["_variant"].unique(), key=lambda x: (len(x), x))
-            rows = [{"Variant": v, **_drop_counts(pre["_variant"] == v)} for v in variants]
-            rows.append({"Variant": "TOTAL", **_drop_counts(pre.index)})
-            ddf = pd.DataFrame(rows)
-
-            if ddf["Total dropped"].iloc[-1] > 0:
-                st.markdown("#### Dropped orders (per variant)")
-                scope = f"test {selected_test}" if selected_test else "the current selection"
-                st.caption(f"Orders removed from the table above by the exclusion filters, for {scope}. "
-                           "**By team email** = internal/team emails; "
-                           f"**By IP cap** = beyond {cap_n} orders/IP; "
-                           "**By showroom** = showroom-payment orders (only when that filter is on). "
-                           "An order hit by more than one is counted in each column but once in Total.")
-                st.dataframe(ddf, use_container_width=True, hide_index=True)
-                download_button(ddf, "Download dropped-per-variant", "dropped_variant")
-
-                # Order-level detail: which domain / IP triggered each drop.
-                dc1, dc2 = st.columns(2)
-                if exclude_team and "_team_domain" in pre.columns and team_m.any():
-                    te = (pre.loc[team_m, ["_variant", COL_ORDER, "_team_domain"]]
-                          .drop_duplicates(COL_ORDER)
-                          .rename(columns={"_variant": "Variant", "_team_domain": "email_domain"}))
-                    with dc1:
-                        download_button(te, "Download email-dropped detail", "dropped_email")
-                if cap_on and "_ip" in pre.columns and ip_m.any():
-                    ie = (pre.loc[ip_m, ["_variant", COL_ORDER, "_ip"]]
-                          .drop_duplicates(COL_ORDER)
-                          .rename(columns={"_variant": "Variant", "_ip": "ip_address"}))
-                    with dc2:
-                        download_button(ie, "Download IP-dropped detail", "dropped_ip")
-
         # Invasive product swaps — which original product was replaced by which ordered
         # product, per variant (the customer was moved up to a better product).
         if ("_is_invasive_swap" in work_all.columns and "itemname" in work_all.columns
@@ -2287,73 +2245,6 @@ def main() -> None:
                    .sort_values(["Variant", "Orders"], ascending=[True, False]))
             st.dataframe(det, use_container_width=True, hide_index=True)
             download_button(det, "Download invasive swaps", "invasive_swaps")
-
-        # 📤 Push the per-variant numbers into the finalization Google Sheet's
-        # "Pro porovnání z Analyzeru (BG)" block (routed by each tab's B1 campaign link).
-        if selected_test:
-            with st.expander("📤 Send to Google Sheets (Analyzer comparison block)"):
-                try:
-                    default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
-                except Exception:
-                    default_sid = ""
-                sid = st.text_input("Target spreadsheet — paste the link or id", value=default_sid,
-                                    placeholder="https://docs.google.com/spreadsheets/d/…/edit")
-                if not gsheets_ready():
-                    st.info(
-                        "**One-time setup needed to write.** The spreadsheet above you just paste — "
-                        "but to *write* into it the app needs a Google **service-account key** (its "
-                        "login). A link alone can't grant write access. Add a `[gcp_service_account]` "
-                        "block to the app's secrets once (see README → *Send to Google Sheets*); then "
-                        "the buttons appear here. Until then, use **Download per-variant** above and "
-                        "paste manually.")
-                else:
-                    st.caption("✍️ The app writes as the address below — it must be an **Editor** on "
-                               "the spreadsheet (Share → add as Editor):")
-                    st.code(gsa_email(), language=None)
-                c1, c2 = st.columns(2) if gsheets_ready() else (None, None)
-                if gsheets_ready() and c1.button(f"Send test {selected_test} → its tab", use_container_width=True):
-                    try:
-                        sh = _open_spreadsheet(_gsheets_client(), sid)
-                        ws = campaign_tab_map(sh).get(str(selected_test))
-                        if ws is None:
-                            st.error(f"No tab references campaign {selected_test} in its B1 link.")
-                        else:
-                            tvdf, tvwo = compute_template_data(report_df, selected_test, use_gross,
-                                                               profit_col, acc, vwo_token)
-                            write_template_blocks(ws, ws.title, tvdf, tvwo)
-                            st.success(f"Filled VWO + Alensis blocks on “{ws.title}”.")
-                    except Exception as e:  # noqa: BLE001
-                        show_gsheets_error(e)
-                if gsheets_ready() and c2.button("Fill all tabs from this export", use_container_width=True):
-                    try:
-                        sh = _open_spreadsheet(_gsheets_client(), sid)
-                        tabs = campaign_tab_map(sh)
-                        if not tabs:
-                            st.warning("No tabs with a VWO campaign link in B1.")
-                        else:
-                            done, skipped = [], []
-                            for cid, ws in tabs.items():
-                                tvdf, tvwo = compute_template_data(report_df, cid, use_gross,
-                                                                   profit_col, acc, vwo_token)
-                                if tvdf is None or tvdf.empty:
-                                    skipped.append(f"{ws.title} ({cid})")
-                                    continue
-                                try:
-                                    write_template_blocks(ws, ws.title, tvdf, tvwo)
-                                    done.append(ws.title)
-                                except Exception as we:  # noqa: BLE001
-                                    skipped.append(f"{ws.title} ({we})")
-                            st.success(f"Filled {len(done)} tab(s): {', '.join(done) or '—'}")
-                            if skipped:
-                                st.caption("Skipped: " + "; ".join(skipped))
-                    except Exception as e:  # noqa: BLE001
-                        show_gsheets_error(e)
-                if gsheets_ready():
-                    st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link, and "
-                               "blocks by their merged **VWO**/**Desktop**/**Mobile**/**Alensis** titles. "
-                               "Both buttons write each campaign's full data (VWO block + device split "
-                               "from VWO, Alensis block from the sales export in CZK). Re-sending "
-                               "overwrites the data cells in place.")
 
         # Two VWO-only device tables (mobile+tablet, desktop) under the main per-variant table.
         if vwo_token and selected_test:
@@ -2433,7 +2324,8 @@ def main() -> None:
                 st.dataframe(style_money(ndf), use_container_width=True, hide_index=True)
                 download_button(ndf, "Download per-variant (non-private)", "per_variant_nonpriv")
 
-    with tab_pivot:
+    elif page.endswith("Custom pivot"):
+        st.subheader("🧮 Custom pivot")
         candidates = ["_variant", "_brand", "_item_category", "_project",
                       "orderDestinationCountryId", "payment", "delivery_type",
                       "itemname", "commonName", "orderMonth", "orderDay"]
@@ -2456,6 +2348,128 @@ def main() -> None:
             download_button(pdf, "Download pivot", "pivot")
         else:
             st.info("Pick one or more columns to group by.")
+
+    elif page.endswith("Excluded orders"):
+        st.subheader("🚫 Excluded orders (per variant)")
+        # Orders the exclusion filters removed, per variant (audit of the team-email,
+        # IP-cap and showroom drops). Counts DISTINCT orders from the in-test rows before filtering.
+        pre = work_pre_excl
+        if ((exclude_team or cap_on or exclude_showroom)
+                and "_variant" in pre.columns and COL_ORDER in pre.columns):
+            _F = pd.Series(False, index=pre.index)
+            team_m = pre["_is_team"] if (exclude_team and "_is_team" in pre.columns) else _F
+            ip_m = (pre["_ip_rank"] >= cap_n) if (cap_on and "_ip_rank" in pre.columns) else _F
+            sr_m = pre["_is_showroom"] if (exclude_showroom and "_is_showroom" in pre.columns) else _F
+
+            def _drop_counts(idx) -> dict:
+                sub = pre.loc[idx]
+                return {"By team email": sub.loc[team_m.loc[idx], COL_ORDER].nunique(),
+                        "By IP cap": sub.loc[ip_m.loc[idx], COL_ORDER].nunique(),
+                        "By showroom": sub.loc[sr_m.loc[idx], COL_ORDER].nunique(),
+                        "Total dropped": sub.loc[(team_m | ip_m | sr_m).loc[idx], COL_ORDER].nunique()}
+
+            variants = sorted(pre["_variant"].unique(), key=lambda x: (len(x), x))
+            rows = [{"Variant": v, **_drop_counts(pre["_variant"] == v)} for v in variants]
+            rows.append({"Variant": "TOTAL", **_drop_counts(pre.index)})
+            ddf = pd.DataFrame(rows)
+
+            if ddf["Total dropped"].iloc[-1] > 0:
+                scope = f"test {selected_test}" if selected_test else "the current selection"
+                st.caption(f"Orders removed from every view by the exclusion filters, for {scope}. "
+                           "**By team email** = internal/team emails; "
+                           f"**By IP cap** = beyond {cap_n} orders/IP; "
+                           "**By showroom** = showroom-payment orders (only when that filter is on). "
+                           "An order hit by more than one is counted in each column but once in Total.")
+                st.dataframe(ddf, use_container_width=True, hide_index=True)
+                download_button(ddf, "Download dropped-per-variant", "dropped_variant")
+
+                # Order-level detail: which domain / IP triggered each drop.
+                dc1, dc2 = st.columns(2)
+                if exclude_team and "_team_domain" in pre.columns and team_m.any():
+                    te = (pre.loc[team_m, ["_variant", COL_ORDER, "_team_domain"]]
+                          .drop_duplicates(COL_ORDER)
+                          .rename(columns={"_variant": "Variant", "_team_domain": "email_domain"}))
+                    with dc1:
+                        download_button(te, "Download email-dropped detail", "dropped_email")
+                if cap_on and "_ip" in pre.columns and ip_m.any():
+                    ie = (pre.loc[ip_m, ["_variant", COL_ORDER, "_ip"]]
+                          .drop_duplicates(COL_ORDER)
+                          .rename(columns={"_variant": "Variant", "_ip": "ip_address"}))
+                    with dc2:
+                        download_button(ie, "Download IP-dropped detail", "dropped_ip")
+            else:
+                st.info("No orders are being dropped by the current exclusion filters in this selection.")
+        else:
+            st.info("No exclusion filters are active. Enable **team / IP cap / showroom** exclusions "
+                    "in the sidebar to see what they remove.")
+
+    elif page.endswith("Google Sheets"):
+        st.subheader("📤 Send to Google Sheets (Analyzer comparison block)")
+        if not selected_test:
+            st.info("Pick a **Test** in the sidebar to enable the Sheets export.")
+        else:
+            try:
+                default_sid = st.secrets.get("gsheets_spreadsheet_id", "")
+            except Exception:
+                default_sid = ""
+            sid = st.text_input("Target spreadsheet — paste the link or id", value=default_sid,
+                                placeholder="https://docs.google.com/spreadsheets/d/…/edit")
+            if not gsheets_ready():
+                st.info(
+                    "**One-time setup needed to write.** The spreadsheet above you just paste — "
+                    "but to *write* into it the app needs a Google **service-account key** (its "
+                    "login). A link alone can't grant write access. Add a `[gcp_service_account]` "
+                    "block to the app's secrets once (see README → *Send to Google Sheets*); then "
+                    "the buttons appear here. Until then, use **Download per-variant** on the "
+                    "Per-variant page and paste manually.")
+            else:
+                st.caption("✍️ The app writes as the address below — it must be an **Editor** on "
+                           "the spreadsheet (Share → add as Editor):")
+                st.code(gsa_email(), language=None)
+            c1, c2 = st.columns(2) if gsheets_ready() else (None, None)
+            if gsheets_ready() and c1.button(f"Send test {selected_test} → its tab", use_container_width=True):
+                try:
+                    sh = _open_spreadsheet(_gsheets_client(), sid)
+                    ws = campaign_tab_map(sh).get(str(selected_test))
+                    if ws is None:
+                        st.error(f"No tab references campaign {selected_test} in its B1 link.")
+                    else:
+                        tvdf, tvwo = compute_template_data(report_df, selected_test, use_gross,
+                                                           profit_col, acc, vwo_token)
+                        write_template_blocks(ws, ws.title, tvdf, tvwo)
+                        st.success(f"Filled VWO + Alensis blocks on “{ws.title}”.")
+                except Exception as e:  # noqa: BLE001
+                    show_gsheets_error(e)
+            if gsheets_ready() and c2.button("Fill all tabs from this export", use_container_width=True):
+                try:
+                    sh = _open_spreadsheet(_gsheets_client(), sid)
+                    tabs = campaign_tab_map(sh)
+                    if not tabs:
+                        st.warning("No tabs with a VWO campaign link in B1.")
+                    else:
+                        done, skipped = [], []
+                        for cid, ws in tabs.items():
+                            tvdf, tvwo = compute_template_data(report_df, cid, use_gross,
+                                                               profit_col, acc, vwo_token)
+                            if tvdf is None or tvdf.empty:
+                                skipped.append(f"{ws.title} ({cid})")
+                                continue
+                            try:
+                                write_template_blocks(ws, ws.title, tvdf, tvwo)
+                                done.append(ws.title)
+                            except Exception as we:  # noqa: BLE001
+                                skipped.append(f"{ws.title} ({we})")
+                        st.success(f"Filled {len(done)} tab(s): {', '.join(done) or '—'}")
+                        if skipped:
+                            st.caption("Skipped: " + "; ".join(skipped))
+                except Exception as e:  # noqa: BLE001
+                    show_gsheets_error(e)
+            if gsheets_ready():
+                st.caption("Tabs are matched by the VWO campaign id in each tab's **B1** link, and "
+                           "blocks by their merged **VWO**/**Desktop**/**Mobile**/**Alensis** titles. "
+                           "Both buttons write each campaign's full data (VWO block + device split "
+                           "from VWO, Alensis block from the sales export in CZK). Re-sending "
+                           "overwrites the data cells in place.")
 
 
 if __name__ == "__main__":

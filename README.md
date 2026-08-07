@@ -52,15 +52,22 @@ export, then copy or download clean figures for your master sheet.
   (Standard = `item_profit`, FIFO = `itemProfitByAccountingFifoPrice`) adds Margin,
   Margin/obj and Margin % to the views. *Note: the `item_profit` column is only valid
   when the export's sell prices and purchase prices share a currency (CZK).*
-- **Three views:**
-  - **Totals** — one summary row for the current filter.
-  - **Per-variant** — one row per variant plus a **TOTAL** row, mirroring the manual
+- **Pages (sidebar menu — one view at a time):** the sidebar switches between pages so the
+  screen shows only the view you're on, instead of one long scroll. Filters live in the
+  sidebar (grouped: *Test & variant · Exclusions & order state · Product filters*) and apply
+  across every page.
+  - **📊 Overview** — headline totals for the current filter (+ the approximate VWO running
+    periods for the selected test).
+  - **📈 Per-variant** — one row per variant plus a **TOTAL** row, mirroring the manual
     evaluation sheet: Orders, **Storno** (cancelled) + % storno, Revenue, AOV, Margin,
-    Margin/obj, Margin %. When **Private brands only** is checked, a **second table**
-    appears below with the same columns computed over the **full orders that contain a
-    private brand** (whole basket, matching the department's "jen privátní čočky").
-  - **Custom pivot** — group by any columns × metrics.
-- **Export:** every view has a Download CSV button (semicolon, UTF-8 BOM — Excel-friendly).
+    Margin/obj, Margin %, Invasive-swaps count, plus VWO columns and the VWO device split.
+    Below it: the **invasive product-swaps** detail and, when **Private brands only** is
+    ticked, the private / non-private split tables.
+  - **🚫 Excluded orders** — the per-variant dropped-orders audit (team email / IP cap / showroom).
+  - **🧮 Custom pivot** — group by any columns × metrics.
+  - **📤 Google Sheets** — send the finalization blocks to the spreadsheet.
+  - **🧪 VWO campaigns** — the file-free VWO campaign browser.
+- **Export:** every table has a Download CSV button (semicolon, UTF-8 BOM — Excel-friendly).
 - **Percentages are Sheets-friendly:** all `%` columns (% storno, Margin %, Conv. rate %,
   Improvement %, …) are stored as **fractions** (e.g. `0.0459`) and only *displayed* as
   `4.59%`. So when you copy a cell into Google Sheets and apply Percent formatting you get
@@ -74,7 +81,7 @@ export, then copy or download clean figures for your master sheet.
 
 ### VWO campaigns section
 
-A sidebar **Section** switch toggles between the **Sales analyzer** and a **VWO campaigns**
+The sidebar **Page** menu includes a **🧪 VWO campaigns**
 view that works without uploading a file. It lists all campaigns (searchable by name/id),
 and selecting one shows **every goal's** per-variation Visitors / Conversions / CR% (+ revenue).
 Selecting **2+** campaigns puts them **side by side to compare**. The campaign list is one
