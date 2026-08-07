@@ -713,14 +713,15 @@ _DERIVE_SCHEMA_VERSION = 4
 
 
 @st.cache_data(show_spinner=False, max_entries=1)
-def load_data(_file, name: str, size: int) -> pd.DataFrame:
+def load_data(_file, name: str, size: int, schema: int) -> pd.DataFrame:
     """Parse the uploaded export into a typed DataFrame (only the columns we use).
 
     Reads straight from the uploaded file object (`_file` — not hashed; cached on
     name+size). Avoids copying the raw bytes (getvalue() + BytesIO would each duplicate
-    an ~900 MB upload, blowing past memory on large files).
+    an ~900 MB upload, blowing past memory on large files). `schema` is passed as a real
+    argument (not just referenced) so bumping _DERIVE_SCHEMA_VERSION actually changes the
+    cache key and re-parses stale DataFrames from an older derive.
     """
-    _ = _DERIVE_SCHEMA_VERSION  # part of the cache key (see constant above)
     # Read our known columns plus any email column (auto-detected by name) for team-order exclusion.
     wanted = lambda c: (str(c).strip() in USED_COLUMNS) or ("mail" in str(c).strip().lower())
     try:
@@ -1461,15 +1462,15 @@ def _drive_stream(file_id: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def load_from_drive(file_id: str, modified: str, test_id: str) -> pd.DataFrame | None:
+def load_from_drive(file_id: str, modified: str, test_id: str, schema: int) -> pd.DataFrame | None:
     """Stream a big export from Drive and keep ONLY the selected test's rows.
 
     Reads the CSV in chunks straight off the Drive download stream, filters each chunk to
     the test (never holding the whole file), then derives columns on the small slice.
-    `modified` is part of the cache key so a re-uploaded file re-reads. Returns None if the
-    test has no rows in the file.
+    `modified` is part of the cache key so a re-uploaded file re-reads. `schema` (passed as
+    a real argument) makes bumping _DERIVE_SCHEMA_VERSION change the cache key and re-parse.
+    Returns None if the test has no rows in the file.
     """
-    _ = _DERIVE_SCHEMA_VERSION  # part of the cache key (see constant above)
     wanted = lambda c: (str(c).strip() in USED_COLUMNS) or ("mail" in str(c).strip().lower())
     tok = re.escape(str(test_id))
     pat = re.compile(rf"(?:^|\|){tok}(?:\||$)")
@@ -1838,7 +1839,7 @@ def _load_sales_from_drive() -> pd.DataFrame:
         st.info("Enter the VWO test id you're evaluating — only that test's rows are streamed in.")
         st.stop()
     with st.spinner(f"Streaming test {test_id} from Drive…"):
-        df = load_from_drive(f["id"], f.get("modifiedTime", ""), test_id)
+        df = load_from_drive(f["id"], f.get("modifiedTime", ""), test_id, _DERIVE_SCHEMA_VERSION)
     if df is None or df.empty:
         st.warning(f"No rows for test {test_id} in “{f['name']}”. Double-check the id.")
         st.stop()
@@ -1883,7 +1884,7 @@ def main() -> None:
                 "if it crashes, use the **Google Drive** source instead (streams one test at a time).")
         try:
             with st.spinner(f"Loading {size_mb:,.0f} MB…"):
-                df = load_data(uploaded, uploaded.name, uploaded.size)
+                df = load_data(uploaded, uploaded.name, uploaded.size, _DERIVE_SCHEMA_VERSION)
         except Exception as e:  # noqa: BLE001 — parse errors; OOM kills the process outright
             st.error(f"Couldn't load this file ({type(e).__name__}: {e}). If it's very large, use "
                      "the Google Drive source.")
