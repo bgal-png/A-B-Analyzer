@@ -2234,6 +2234,20 @@ def main() -> None:
                        "**Original** = the source product (`alternative_product_source`); "
                        "**Ordered** = the product actually on the order. "
                        f"{sw[COL_ORDER].nunique():,} orders with a swap in this selection.")
+
+            # Count of swaps per variant — each invasive-swap line counted (an order that
+            # swapped two products counts twice). TOTAL = all swap lines in this selection.
+            sw_variants = sorted(sw["_variant"].unique(), key=lambda x: (len(x), x))
+            _line_per = sw.groupby("_variant", observed=True).size()
+            scrows = [{"Variant": v, "Swaps": int(_line_per.get(v, 0))} for v in sw_variants]
+            scrows.append({"Variant": "TOTAL", "Swaps": int(len(sw))})
+            scdf = pd.DataFrame(scrows)
+            st.markdown("**Swaps per variant**")
+            sc_left, _sc_right = st.columns([1, 2])
+            with sc_left:
+                st.dataframe(scdf, use_container_width=True, hide_index=True)
+                download_button(scdf, "Download swaps-per-variant", "swaps_per_variant")
+            st.markdown("**Swap detail (which product → which)**")
             # Plain, stripped strings for display: categorical values with a trailing space
             # render blank in st.dataframe's grid (the data is fine — see the CSV), and the
             # trailing space would also split an identical product into separate rows.
