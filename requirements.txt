@@ -4,3 +4,4 @@ openpyxl>=3.1
 gspread>=6
 google-auth>=2.30
 requests>=2.30
+pywebview>=5   # desktop_app.py: run the analyzer in a native window (no browser)

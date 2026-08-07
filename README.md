@@ -190,6 +190,21 @@ streamlit run app.py
 
 Upload your export, or try `sample_data/sample_sales.csv`.
 
+## Run as a desktop app (own window, no browser, uses your PC's resources)
+
+Double-click **`Run A-B Analyzer.bat`**. It launches the analyzer in its **own
+native window** (via pywebview) — no browser tab — using **this computer's RAM**
+instead of Streamlit Cloud's ~1 GB cap, so large exports load without the Drive
+workaround. On launch it does a fast-forward `git pull`, so you always run the
+latest pushed version — **no rebuild/redeploy step**. Close the window to quit
+(the background server stops automatically).
+
+- First run installs `pywebview` (and any missing deps); later runs are instant.
+- Put it on your Desktop with a **shortcut** (right-click → Send to → Desktop),
+  not a copy — the launcher must stay inside the repo folder so `git pull` works.
+- Under the hood it's still Streamlit (a hidden `127.0.0.1` server); the window
+  is [`desktop_app.py`](desktop_app.py). Requires Python + git installed.
+
 ## Deploy on Streamlit Cloud
 
 1. Push to GitHub.
