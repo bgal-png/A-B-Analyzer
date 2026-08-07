@@ -200,10 +200,16 @@ latest pushed version — **no rebuild/redeploy step**. Close the window to quit
 (the background server stops automatically).
 
 - First run installs `pywebview` (and any missing deps); later runs are instant.
-- Put it on your Desktop with a **shortcut** (right-click → Send to → Desktop),
-  not a copy — the launcher must stay inside the repo folder so `git pull` works.
 - Under the hood it's still Streamlit (a hidden `127.0.0.1` server); the window
   is [`desktop_app.py`](desktop_app.py). Requires Python + git installed.
+
+**Pin it to the taskbar.** A `.bat` can't be pinned directly, so run
+[`make_desktop_shortcut.ps1`](make_desktop_shortcut.ps1) once (right-click → Run
+with PowerShell). It creates **A-B Analyzer** on your Desktop targeting
+`pythonw.exe desktop_app.py` (a real program, so Windows allows pinning) with the
+[`assets/analyzer.ico`](assets/analyzer.ico) icon. Then right-click that shortcut
+→ *Show more options* → **Pin to taskbar**. The shortcut still runs from the repo
+folder, so the launch-time `git pull` auto-update keeps working.
 
 ## Deploy on Streamlit Cloud
 

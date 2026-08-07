@@ -31,6 +31,20 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _ensure_deps() -> None:
+    """First-run safety net: if the window lib (or other deps) is missing, install
+    requirements. Lets a taskbar shortcut launch straight into pythonw without the .bat."""
+    try:
+        import webview  # noqa: F401
+        return
+    except Exception:
+        pass
+    req = HERE / "requirements.txt"
+    if req.exists():
+        subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req)],
+                       cwd=str(HERE), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _git_pull() -> None:
     """Best-effort fast-forward to the latest pushed version. Never clobbers:
     if offline / not a repo / can't fast-forward, we just run what's on disk."""
@@ -83,6 +97,7 @@ def main() -> int:
         print(f"app.py not found next to launcher: {APP}", file=sys.stderr)
         return 1
 
+    _ensure_deps()
     _git_pull()
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
