@@ -2270,16 +2270,20 @@ def main() -> None:
         # product, per variant (the customer was moved up to a better product).
         if ("_is_invasive_swap" in work_all.columns and "itemname" in work_all.columns
                 and work_all["_is_invasive_swap"].any()):
-            sw = work_all[work_all["_is_invasive_swap"]]
+            sw = work_all[work_all["_is_invasive_swap"]].copy()
             st.markdown("#### Invasive product swaps (per variant)")
             st.caption("Orders where the customer was upgraded to a better product. "
                        "**Original** = the source product (`alternative_product_source`); "
                        "**Ordered** = the product actually on the order. "
                        f"{sw[COL_ORDER].nunique():,} orders with a swap in this selection.")
-            det = (sw.groupby(["_variant", "_swap_source", "itemname"], observed=True)[COL_ORDER]
+            # Plain, stripped strings for display: categorical values with a trailing space
+            # render blank in st.dataframe's grid (the data is fine — see the CSV), and the
+            # trailing space would also split an identical product into separate rows.
+            sw["Original product"] = sw["_swap_source"].astype(str).str.strip()
+            sw["Ordered product"] = sw["itemname"].astype(str).str.strip()
+            det = (sw.groupby(["_variant", "Original product", "Ordered product"])[COL_ORDER]
                    .nunique().reset_index()
-                   .rename(columns={"_variant": "Variant", "_swap_source": "Original product",
-                                    "itemname": "Ordered product", COL_ORDER: "Orders"})
+                   .rename(columns={"_variant": "Variant", COL_ORDER: "Orders"})
                    .sort_values(["Variant", "Orders"], ascending=[True, False]))
             st.dataframe(det, use_container_width=True, hide_index=True)
             download_button(det, "Download invasive swaps", "invasive_swaps")
