@@ -30,6 +30,12 @@ export, then copy or download clean figures for your master sheet.
   column but once in Total). Scoped to the selected test and the active filters.
   Two **Download** buttons give the order-level detail — email-dropped (variant, order, domain)
   and IP-dropped (variant, order, IP). The table is hidden when nothing is dropped.
+- **Invasive product swaps (per variant).** When the export has `alternative_product_invasive`
+  (`"1"` = the customer was moved up to a better product) and `alternative_product_source` (the
+  original product name), the Per-variant table gains an **Invasive swaps** count column (distinct
+  orders with a swap, per variant + TOTAL), and a **detail table** below lists each swap —
+  **Variant · Original product · Ordered product (`itemname`) · Orders** — with a CSV download.
+  Scoped to the selected test; hidden when the export has no invasive swaps.
 - **Private brands** = the `PRIVATE_BRANDS` list (any product type), read from the
   authoritative `categoriesData-brand` column when present (fallback: accent-/case-
   insensitive item-name matching). The per-variant private split flags orders that

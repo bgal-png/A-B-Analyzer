@@ -696,6 +696,7 @@ USED_COLUMNS = {
     "itemname", "commonName", "payment", "orderDestinationCountryId", "delivery_type",
     "orderMonth", "orderDay", "categoriesData-brand", "categoriesData-items-type",
     "customerIpAddress",
+    "alternative_product_invasive", "alternative_product_source",
     *PROFIT_COLS.values(),
 }
 # Repeating-text columns read straight as category to cut peak memory on big CSVs.
@@ -708,7 +709,7 @@ CAT_COLUMNS = {
 # Bump when _derive_columns changes its output schema. Referenced inside the cached
 # loaders so their source hash (and thus st.cache_data key) changes → stale cached
 # DataFrames from an older schema are re-parsed instead of served.
-_DERIVE_SCHEMA_VERSION = 3
+_DERIVE_SCHEMA_VERSION = 4
 
 
 @st.cache_data(show_spinner=False, max_entries=1)
@@ -842,6 +843,21 @@ def _derive_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["_is_showroom"] = df["payment"].str.contains("showroom", case=False, na=False)
     else:
         df["_is_showroom"] = False
+
+    # Invasive product-swap flag: the customer was moved to a "better" product.
+    # alternative_product_invasive == "1"; alternative_product_source holds the ORIGINAL
+    # product name (kept as category for the swaps view), itemname = the product ordered.
+    if "alternative_product_invasive" in df.columns:
+        df["_is_invasive_swap"] = df["alternative_product_invasive"].astype(str).str.strip() == "1"
+        src = (df["alternative_product_source"].astype(str)
+               if "alternative_product_source" in df.columns
+               else pd.Series("", index=df.index))
+        df["_swap_source"] = src.where(df["_is_invasive_swap"], "").astype("category")
+        df = df.drop(columns=[c for c in ("alternative_product_invasive", "alternative_product_source")
+                              if c in df.columns])
+    else:
+        df["_is_invasive_swap"] = False
+        df["_swap_source"] = ""
 
     # Project / eshop label from ref_projects id.
     if COL_PROJECT in df.columns:
@@ -2185,6 +2201,15 @@ def main() -> None:
             else:
                 st.caption("⚠️ Couldn't fetch VWO data for this campaign (token/plan/campaign id).")
 
+        # Invasive product swaps (customer upgraded to a better product): count of
+        # distinct orders with a swap, per variant. Same order universe as the table.
+        if "_is_invasive_swap" in work_all.columns and work_all["_is_invasive_swap"].any():
+            sw_all = work_all[work_all["_is_invasive_swap"]]
+            sw_per = sw_all.groupby("_variant", observed=True)[COL_ORDER].nunique()
+            sw_total = sw_all[COL_ORDER].nunique()
+            vdf["Invasive swaps"] = vdf["Variant"].map(
+                lambda v: sw_total if v == "TOTAL" else int(sw_per.get(v, 0))).astype("Int64")
+
         styler = style_money(vdf)
         if vwo_cols:
             styler = styler.set_properties(subset=vwo_cols,
@@ -2239,6 +2264,24 @@ def main() -> None:
                           .rename(columns={"_variant": "Variant", "_ip": "ip_address"}))
                     with dc2:
                         download_button(ie, "Download IP-dropped detail", "dropped_ip")
+
+        # Invasive product swaps — which original product was replaced by which ordered
+        # product, per variant (the customer was moved up to a better product).
+        if ("_is_invasive_swap" in work_all.columns and "itemname" in work_all.columns
+                and work_all["_is_invasive_swap"].any()):
+            sw = work_all[work_all["_is_invasive_swap"]]
+            st.markdown("#### Invasive product swaps (per variant)")
+            st.caption("Orders where the customer was upgraded to a better product. "
+                       "**Original** = the source product (`alternative_product_source`); "
+                       "**Ordered** = the product actually on the order. "
+                       f"{sw[COL_ORDER].nunique():,} orders with a swap in this selection.")
+            det = (sw.groupby(["_variant", "_swap_source", "itemname"], observed=True)[COL_ORDER]
+                   .nunique().reset_index()
+                   .rename(columns={"_variant": "Variant", "_swap_source": "Original product",
+                                    "itemname": "Ordered product", COL_ORDER: "Orders"})
+                   .sort_values(["Variant", "Orders"], ascending=[True, False]))
+            st.dataframe(det, use_container_width=True, hide_index=True)
+            download_button(det, "Download invasive swaps", "invasive_swaps")
 
         # 📤 Push the per-variant numbers into the finalization Google Sheet's
         # "Pro porovnání z Analyzeru (BG)" block (routed by each tab's B1 campaign link).
